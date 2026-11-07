@@ -302,7 +302,7 @@ async function initDatabase() {
     parent_email TEXT,
     verified INTEGER DEFAULT 0,
     theme TEXT,
-    created_at INTEGER
+    created_at BIGINT
   )`);
 
   await asyncDb('run', `CREATE TABLE IF NOT EXISTS posts (
@@ -313,7 +313,7 @@ async function initDatabase() {
     scope_value TEXT,
     text TEXT,
     image TEXT,
-    created_at INTEGER,
+    created_at BIGINT,
     deleted INTEGER DEFAULT 0
   )`);
 
@@ -322,7 +322,7 @@ async function initDatabase() {
     post_id TEXT,
     user_id TEXT,
     text TEXT,
-    created_at INTEGER
+    created_at BIGINT
   )`);
 
   await asyncDb('run', `CREATE TABLE IF NOT EXISTS likes (
@@ -354,6 +354,9 @@ async function initDatabase() {
     poll_id TEXT,
     user_id TEXT
   )`);
+  await asyncDb('run', 'ALTER TABLE users ALTER COLUMN created_at TYPE BIGINT');
+  await asyncDb('run', 'ALTER TABLE posts ALTER COLUMN created_at TYPE BIGINT');
+  await asyncDb('run', 'ALTER TABLE comments ALTER COLUMN created_at TYPE BIGINT');
 
   await asyncDb('run', `CREATE TABLE IF NOT EXISTS email_codes (
     user_id TEXT NOT NULL,
