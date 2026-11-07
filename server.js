@@ -1,31 +1,60 @@
 const express = require('express');
 const session = require('express-session');
-const sqlite3 = require('sqlite3').verbose();
-const fs = require('fs');
+const pg = require('pg');
+const connectPgSimple = require('connect-pg-simple');
+require('dotenv').config();
 const path = require('path');
 const crypto = require('crypto');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
-const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
-const DB_PATH = path.join(DATA_DIR, 'corridoio.db');
-const SESSION_SECRET = process.env.SESSION_SECRET || 'corridoio-secret-key';
-const ALLOWED_SCHOOL_DOMAINS = (process.env.ALLOWED_SCHOOL_DOMAINS || 'liceo-demo.it')
+const DATABASE_URL = process.env.DATABASE_URL;
+const SESSION_SECRET = process.env.SESSION_SECRET || (!process.env.VERCEL ? 'local-development-only-secret' : '');
+const SCHOOL_DOMAIN = 'liceoleonardomi.edu.it';
+const SCHOOL_NAME = 'liceoleonardomi';
+const ALLOWED_SCHOOL_DOMAINS = [SCHOOL_DOMAIN];
+const ALLOWED_CLASSES = process.env.ALLOWED_CLASSES
+  ? process.env.ALLOWED_CLASSES.split(',').map((cls) => cls.trim().toUpperCase()).filter(Boolean)
+  : Array.from({ length: 5 }, (_, year) => 'ABCDEFGH'.split('').map((letter) => `${year + 1}${letter}`)).flat();
+const MODERATOR_EMAILS = (process.env.MODERATOR_EMAILS || '')
   .split(',')
-  .map((domain) => String(domain).trim().toLowerCase())
+  .map((email) => email.trim().toLowerCase())
   .filter(Boolean);
-const ALLOWED_CLASSES = (process.env.ALLOWED_CLASSES || '1A,1B,2A,2B,3A,3B')
-  .split(',')
-  .map((cls) => String(cls).trim().toUpperCase())
-  .filter(Boolean);
-const verificationCodes = new Map();
-const resetCodes = new Map();
+const EMAIL_FROM = process.env.EMAIL_FROM;
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const pool = new pg.Pool({ connectionString: DATABASE_URL, max: 5 });
+const PgSessionStore = connectPgSimple(session);
+const sessionStore = new PgSessionStore({ pool, tableName: 'user_sessions', createTableIfMissing: true });
+let databaseReady;
 
-fs.mkdirSync(DATA_DIR, { recursive: true });
-const db = new sqlite3.Database(DB_PATH);
+function sqlPlaceholders(query) {
+  let index = 0;
+  return query.replace(/\?/g, () => `$${++index}`);
+}
+
+function queryWithCallback(method, query, params, callback) {
+  pool.query(sqlPlaceholders(query), params, (error, result) => {
+    if (error) return callback(error);
+    if (method === 'get') return callback(null, result.rows[0]);
+    if (method === 'all') return callback(null, result.rows);
+    return callback.call({ changes: result.rowCount }, null);
+  });
+}
+
+const db = {
+  get(query, params, callback) {
+    queryWithCallback('get', query, params, callback);
+  },
+  all(query, params, callback) {
+    queryWithCallback('all', query, params, callback);
+  },
+  run(query, params, callback) {
+    queryWithCallback('run', query, params, callback);
+  },
+};
 
 function hashPassword(salt, pass) {
-  return crypto.createHash('sha256').update(String(salt) + String(pass)).digest('hex');
+  return crypto.scryptSync(String(pass), String(salt), 64).toString('hex');
 }
 
 function randomId(prefix = 'id') {
@@ -34,9 +63,7 @@ function randomId(prefix = 'id') {
 }
 
 function randomCode(length = 6) {
-  let out = '';
-  for (let i = 0; i < length; i += 1) out += Math.floor(Math.random() * 10);
-  return out;
+  return crypto.randomInt(0, 10 ** length).toString().padStart(length, '0');
 }
 
 function asyncDb(method, query, params = []) {
@@ -52,6 +79,77 @@ function schoolDomainMatch(email) {
   if (!/^[^@\s]+@[^@\s]+\.[a-z]+$/i.test(email)) return false;
   const domain = email.split('@')[1]?.toLowerCase();
   return !!domain && ALLOWED_SCHOOL_DOMAINS.includes(domain);
+}
+
+function codeHash(code) {
+  return crypto.createHash('sha256').update(String(code)).digest('hex');
+}
+
+async function sendEmail(to, subject, code, purpose) {
+  if (!RESEND_API_KEY || !EMAIL_FROM) {
+    throw new Error('Email delivery is not configured. Set RESEND_API_KEY and EMAIL_FROM.');
+  }
+  const action = purpose === 'verify' ? 'verificare il tuo account Corridoio' : 'reimpostare la password';
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${RESEND_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: EMAIL_FROM,
+      to: [to],
+      subject,
+      text: `Il tuo codice per ${action} è ${code}. Scade tra 10 minuti. Se non hai richiesto questa operazione, ignora questa email.`,
+      html: `<p>Il tuo codice per ${action} è:</p><p style="font-size:28px;font-weight:bold;letter-spacing:6px">${code}</p><p>Scade tra 10 minuti. Se non hai richiesto questa operazione, ignora questa email.</p>`,
+    }),
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    console.error('Resend email request failed', response.status, detail);
+    throw new Error('Email could not be sent.');
+  }
+}
+
+async function issueCode(userId, email, purpose) {
+  const now = Date.now();
+  const permitted = await new Promise((resolve, reject) => {
+    db.get(`INSERT INTO email_send_limits (user_id, purpose, last_sent_at) VALUES (?, ?, ?)
+      ON CONFLICT (user_id, purpose) DO UPDATE SET last_sent_at = EXCLUDED.last_sent_at
+      WHERE email_send_limits.last_sent_at <= ? RETURNING user_id`,
+    [userId, purpose, now, now - 60 * 1000], (err, row) => (err ? reject(err) : resolve(row)));
+  });
+  if (!permitted) {
+    const error = new Error('Attendi un minuto prima di richiedere un altro codice.');
+    error.statusCode = 429;
+    throw error;
+  }
+  const code = randomCode();
+  await asyncDb('run', `DELETE FROM email_codes WHERE user_id = ? AND purpose = ?`, [userId, purpose]);
+  await asyncDb('run', `INSERT INTO email_codes (user_id, purpose, code_hash, expires_at, attempts) VALUES (?, ?, ?, ?, 0)`,
+    [userId, purpose, codeHash(code), Date.now() + 10 * 60 * 1000]);
+  try {
+    await sendEmail(email, purpose === 'verify' ? 'Codice di verifica Corridoio' : 'Reimposta la password Corridoio', code, purpose);
+  } catch (error) {
+    await asyncDb('run', `DELETE FROM email_codes WHERE user_id = ? AND purpose = ?`, [userId, purpose]);
+    throw error;
+  }
+}
+
+async function checkEmailCode(userId, purpose, code) {
+  const record = await new Promise((resolve, reject) => {
+    db.get('SELECT code_hash, expires_at, attempts FROM email_codes WHERE user_id = ? AND purpose = ?', [userId, purpose],
+      (err, row) => (err ? reject(err) : resolve(row)));
+  });
+  if (!record || Number(record.expires_at) < Date.now() || Number(record.attempts) >= 5 || !/^\d{6}$/.test(String(code || ''))) {
+    return false;
+  }
+  const suppliedHash = codeHash(code);
+  if (!crypto.timingSafeEqual(Buffer.from(record.code_hash), Buffer.from(suppliedHash))) {
+    await asyncDb('run', 'UPDATE email_codes SET attempts = attempts + 1 WHERE user_id = ? AND purpose = ?', [userId, purpose]);
+    return false;
+  }
+  return true;
 }
 
 function normalizeClassName(value) {
@@ -186,53 +284,9 @@ async function getPostsForUser(user) {
   return posts.filter(Boolean);
 }
 
-async function seedData() {
-  const count = await new Promise((resolve, reject) => {
-    db.get('SELECT COUNT(*) AS c FROM users', (err, row) => (err ? reject(err) : resolve(row.c)));
-  });
-
-  if (count > 0) return;
-
-  const modSalt = 's1';
-  const modHash = hashPassword(modSalt, 'Moderatore1!');
-
-  await asyncDb('run', `INSERT INTO users (id, email, nick, nome, cognome, school, cls, role, salt, password_hash, born, verified, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`, ['u_mod', 'mod@liceo-demo.it', 'moderatore', 'Moderatore', '', 'liceo-demo', '3A', 'mod', modSalt, modHash, '2009-01-01', Date.now()]);
-
-  const now = Date.now();
-  const posts = [
-    {
-      id: 'p1',
-      user_id: 'u_mod',
-      school: 'liceo-demo',
-      scope_type: 'classe',
-      scope_value: '3A',
-      text: 'Qualcuno ha capito gli integrali per parti? Domani c’è la verifica e il secondo esercizio non mi torna. #matematica',
-      image: '',
-      created_at: now - 12 * 60 * 1000,
-    },
-    {
-      id: 'p2',
-      user_id: 'u_mod',
-      school: 'liceo-demo',
-      scope_type: 'scuola',
-      scope_value: 'scuola',
-      text: 'A quello con la felpa gialla al bar, ieri alle 2a ricreazione, ti è caduta la tessera. L’ho data al bidello. #spotted',
-      image: '',
-      created_at: now - 60 * 60 * 1000,
-    },
-  ];
-
-  for (const post of posts) {
-    await asyncDb('run', `INSERT INTO posts (id, user_id, school, scope_type, scope_value, text, image, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [post.id, post.user_id, post.school, post.scope_type, post.scope_value, post.text, post.image, post.created_at]);
-  }
-
-  await asyncDb('run', `INSERT INTO comments (id, post_id, user_id, text, created_at) VALUES (?, ?, ?, ?, ?)`, ['c1', 'p1', 'u_mod', 'Scegli come fare la parte che si semplifica derivando.', now - 10 * 60 * 1000]);
-  await asyncDb('run', `INSERT INTO likes (id, post_id, user_id) VALUES (?, ?, ?)`, ['l1', 'p1', 'u_mod']);
-}
-
 async function initDatabase() {
+  if (!DATABASE_URL) throw new Error('DATABASE_URL must be configured.');
+  if (!SESSION_SECRET) throw new Error('SESSION_SECRET must be configured.');
   await asyncDb('run', `CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     email TEXT UNIQUE,
@@ -301,19 +355,48 @@ async function initDatabase() {
     user_id TEXT
   )`);
 
-  await seedData();
+  await asyncDb('run', `CREATE TABLE IF NOT EXISTS email_codes (
+    user_id TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    code_hash TEXT NOT NULL,
+    expires_at BIGINT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, purpose)
+  )`);
+  await asyncDb('run', `ALTER TABLE email_codes ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0`);
+  await asyncDb('run', `CREATE TABLE IF NOT EXISTS email_send_limits (
+    user_id TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    last_sent_at BIGINT NOT NULL,
+    PRIMARY KEY (user_id, purpose)
+  )`);
 }
 
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '4mb' }));
 app.use(express.urlencoded({ extended: true }));
+if (process.env.VERCEL || process.env.NODE_ENV === 'production') app.set('trust proxy', 1);
+app.use(express.static(path.join(__dirname, 'public')));
+app.use(async (req, res, next) => {
+  try {
+    if (!databaseReady) {
+      databaseReady = initDatabase().catch((error) => {
+        databaseReady = undefined;
+        throw error;
+      });
+    }
+    await databaseReady;
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
 app.use(session({
   secret: SESSION_SECRET,
+  store: sessionStore,
   resave: false,
   saveUninitialized: false,
-  cookie: { secure: false, httpOnly: true, sameSite: 'lax' },
+  cookie: { secure: Boolean(process.env.VERCEL || process.env.NODE_ENV === 'production'), httpOnly: true, sameSite: 'lax' },
 }));
-
-app.use(express.static(path.join(__dirname, 'public')));
 
 function requireAuth(req, res, next) {
   if (!req.session.userId) return res.status(401).json({ error: 'Not authenticated' });
@@ -327,10 +410,10 @@ app.get('/api/session', async (req, res) => {
 });
 
 app.post('/api/register', async (req, res) => {
-  const { email, nome, cognome, born, parent, nick, pw, cls, school, accept } = req.body || {};
+  const { email, nome, cognome, born, parent, nick, pw, cls, accept } = req.body || {};
   const normalizedEmail = String(email || '').trim().toLowerCase();
 
-  const normalizedClass = normalizeClassName(cls || '3A');
+  const normalizedClass = normalizeClassName(cls);
 
   if (!normalizedEmail || !schoolDomainMatch(normalizedEmail)) {
     return res.status(400).json({ error: `Email non valida. Usa un account scolastico autorizzato: ${ALLOWED_SCHOOL_DOMAINS.join(', ')}` });
@@ -355,32 +438,33 @@ app.post('/api/register', async (req, res) => {
   if (existing) return res.status(400).json({ error: 'Esiste già un account con questa email.' });
 
   const userId = randomId('u');
-  const salt = randomId('s').slice(0, 10);
+  const salt = crypto.randomBytes(16).toString('hex');
   const hash = hashPassword(salt, pw);
-
-  const schoolName = String(school || 'liceo-demo').trim().toLowerCase();
-
+  const role = MODERATOR_EMAILS.includes(normalizedEmail) ? 'mod' : 'student';
   await asyncDb('run', `INSERT INTO users (id, email, nick, nome, cognome, school, cls, role, salt, password_hash, born, parent_email, verified, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`, [userId, normalizedEmail, String(nick).trim().toLowerCase(), String(nome).trim(), String(cognome).trim(), schoolName, normalizedClass, 'student', salt, hash, String(born), parent ? String(parent).trim().toLowerCase() : null, Date.now()]);
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`, [userId, normalizedEmail, String(nick).trim().toLowerCase(), String(nome).trim(), String(cognome).trim(), SCHOOL_NAME, normalizedClass, role, salt, hash, String(born), parent ? String(parent).trim().toLowerCase() : null, Date.now()]);
 
-  const code = randomCode(6);
-  verificationCodes.set(userId, code);
-
+  try {
+    await issueCode(userId, normalizedEmail, 'verify');
+  } catch (error) {
+    await asyncDb('run', 'DELETE FROM users WHERE id = ?', [userId]);
+    console.error('Verification email delivery failed', error);
+    return res.status(error.statusCode || 503).json({ error: error.statusCode ? error.message : 'Non è stato possibile inviare l’email di verifica. Riprova più tardi.' });
+  }
   req.session.pendingUserId = userId;
-  return res.json({ success: true, verificationCode: code, userId });
+  return res.json({ success: true });
 });
 
 app.post('/api/verify', async (req, res) => {
   const { code } = req.body || {};
   const userId = req.session.pendingUserId || req.session.userId;
   if (!userId) return res.status(400).json({ error: 'Nessun utente da verificare.' });
-  const expected = verificationCodes.get(userId);
-  if (!expected || String(code) !== String(expected)) {
+  if (!await checkEmailCode(userId, 'verify', code)) {
     return res.status(400).json({ error: 'Codice non corretto.' });
   }
 
   await asyncDb('run', 'UPDATE users SET verified = 1 WHERE id = ?', [userId]);
-  verificationCodes.delete(userId);
+  await asyncDb('run', 'DELETE FROM email_codes WHERE user_id = ? AND purpose = ?', [userId, 'verify']);
   req.session.userId = userId;
   req.session.pendingUserId = null;
   const user = await getUserById(userId);
@@ -393,21 +477,23 @@ app.post('/api/login', async (req, res) => {
   const user = await getUserByEmail(normalizedEmail);
  
   if (!user) return res.status(401).json({ error: 'Credenziali non valide.' });
-  const actualHash = hashPassword((await new Promise((resolve, reject) => {
-    db.get('SELECT salt FROM users WHERE id = ?', [user.id], (err, row) => (err ? reject(err) : resolve(row ? row.salt : '')));
-  })), pw);
-
-  if (actualHash !== (await new Promise((resolve, reject) => {
-    db.get('SELECT password_hash FROM users WHERE id = ?', [user.id], (err, row) => (err ? reject(err) : resolve(row ? row.password_hash : '')));
-  }))) {
+  const credentials = await new Promise((resolve, reject) => {
+    db.get('SELECT salt, password_hash FROM users WHERE id = ?', [user.id], (err, row) => (err ? reject(err) : resolve(row)));
+  });
+  const actualHash = hashPassword(credentials.salt, String(pw || ''));
+  if (!crypto.timingSafeEqual(Buffer.from(actualHash), Buffer.from(credentials.password_hash))) {
     return res.status(401).json({ error: 'Credenziali non valide.' });
   }
 
   if (!user.verified) {
-    const code = randomCode(6);
-    verificationCodes.set(user.id, code);
+    try {
+      await issueCode(user.id, normalizedEmail, 'verify');
+    } catch (error) {
+      console.error('Verification email delivery failed', error);
+      return res.status(error.statusCode || 503).json({ error: error.statusCode ? error.message : 'Non è stato possibile inviare l’email di verifica. Riprova più tardi.' });
+    }
     req.session.pendingUserId = user.id;
-    return res.status(403).json({ error: 'Account non verificato', verificationCode: code, userId: user.id });
+    return res.status(403).json({ error: 'Account non verificato: abbiamo inviato un nuovo codice alla tua email.', verificationRequired: true });
   }
 
   req.session.userId = user.id;
@@ -423,27 +509,49 @@ app.post('/api/logout', (req, res) => {
 app.post('/api/forgot', async (req, res) => {
   const email = String(req.body?.email || '').trim().toLowerCase();
   const user = await getUserByEmail(email);
-  if (!user) return res.json({ success: true, message: 'Se l’email esiste, hai ricevuto il codice.' });
-  const code = randomCode(6);
-  resetCodes.set(user.id, code);
-  res.json({ success: true, message: 'Codice inviato.', code });
+  if (user && schoolDomainMatch(email)) {
+    try {
+      await issueCode(user.id, email, 'reset');
+      req.session.resetUserId = user.id;
+    } catch (error) {
+      console.error('Password reset email delivery failed', error);
+      return res.status(error.statusCode || 503).json({ error: error.statusCode ? error.message : 'Non è stato possibile inviare l’email. Riprova più tardi.' });
+    }
+  }
+  res.json({ success: true, message: 'Se l’indirizzo è registrato, riceverai un codice per reimpostare la password.' });
 });
 
 app.post('/api/reset-password', async (req, res) => {
-  const { userId, code, pw } = req.body || {};
-  const expected = resetCodes.get(String(userId));
-  if (!expected || String(code) !== String(expected)) {
+  const { code, pw } = req.body || {};
+  const userId = req.session.resetUserId;
+  if (!userId) return res.status(400).json({ error: 'Richiedi prima un codice per reimpostare la password.' });
+  if (!await checkEmailCode(userId, 'reset', code)) {
     return res.status(400).json({ error: 'Codice non corretto.' });
   }
   if ((String(pw).length < 8) || !/[A-Z]/.test(pw) || !/[a-z]/.test(pw) || !/[0-9]/.test(pw)) {
     return res.status(400).json({ error: 'Password troppo debole.' });
   }
 
-  const salt = randomId('s').slice(0, 10);
+  const salt = crypto.randomBytes(16).toString('hex');
   const hash = hashPassword(salt, pw);
   await asyncDb('run', 'UPDATE users SET salt = ?, password_hash = ? WHERE id = ?', [salt, hash, userId]);
-  resetCodes.delete(String(userId));
+  await asyncDb('run', 'DELETE FROM email_codes WHERE user_id = ? AND purpose = ?', [userId, 'reset']);
+  req.session.resetUserId = null;
   res.json({ success: true });
+});
+
+app.post('/api/resend-verification', async (req, res) => {
+  const userId = req.session.pendingUserId;
+  if (!userId) return res.status(400).json({ error: 'Richiedi nuovamente la verifica accedendo con le tue credenziali.' });
+  const user = await getUserById(userId);
+  if (!user || user.verified) return res.status(400).json({ error: 'Account già verificato o non trovato.' });
+  try {
+    await issueCode(user.id, user.email, 'verify');
+    return res.json({ success: true, message: 'Nuovo codice inviato.' });
+  } catch (error) {
+    console.error('Verification email delivery failed', error);
+    return res.status(error.statusCode || 503).json({ error: error.statusCode ? error.message : 'Non è stato possibile inviare l’email. Riprova più tardi.' });
+  }
 });
 
 app.get('/api/posts', requireAuth, async (req, res) => {
@@ -462,7 +570,7 @@ app.get('/api/moderation', requireAuth, async (req, res) => {
       LEFT JOIN reports r ON r.post_id = p.id
       WHERE p.deleted = 0 AND p.school = ?
       GROUP BY p.id
-      HAVING report_count > 0
+      HAVING COUNT(r.id) > 0
       ORDER BY p.created_at DESC`, [user.school], (err, rows) => (err ? reject(err) : resolve(rows || [])));
   });
 
@@ -579,9 +687,11 @@ app.post('/api/profile', requireAuth, async (req, res) => {
   const user = await getUserById(req.session.userId);
   const { nick, cls, theme } = req.body || {};
   const nextNick = String(nick || user.nick).trim().toLowerCase();
+  const nextClass = normalizeClassName(cls || user.cls);
   if (!/^[a-z0-9_.]{3,20}$/.test(nextNick)) return res.status(400).json({ error: 'Nickname non valido.' });
+  if (!ALLOWED_CLASSES.includes(nextClass)) return res.status(400).json({ error: 'Classe non valida.' });
 
-  await asyncDb('run', 'UPDATE users SET nick = ?, cls = ?, theme = ? WHERE id = ?', [nextNick, cls || user.cls, theme || user.theme, user.id]);
+  await asyncDb('run', 'UPDATE users SET nick = ?, cls = ?, theme = ? WHERE id = ?', [nextNick, nextClass, theme || user.theme, user.id]);
   const updated = await getUserById(user.id);
   res.json({ success: true, user: updated });
 });
@@ -637,6 +747,12 @@ app.delete('/api/profile', requireAuth, async (req, res) => {
 app.use((req, res, next) => {
   if (req.path.startsWith('/api')) return next();
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+app.use((error, req, res, next) => {
+  console.error('Request failed', error);
+  if (res.headersSent) return next(error);
+  res.status(500).json({ error: 'Errore interno. Riprova più tardi.' });
 });
 
 async function startServer() {

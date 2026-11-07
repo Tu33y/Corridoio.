@@ -1,26 +1,28 @@
 # Corridoio
 
-Community scolastica con autenticazione, verifica email, pubblicazioni, moderazione e classi.
+Community scolastica full-stack con account verificati tramite email, classi, post, commenti, sondaggi e moderazione.
 
 ## Requisiti
 
 - Node.js 20+
-- SQLite (gestito dal server)
+- PostgreSQL gestito (Neon consigliato per Vercel)
+- Un dominio mittente verificato su Resend
 
-## Configurazione
+La registrazione è limitata a indirizzi `@liceoleonardomi.edu.it`. Le classi ammesse vanno da `1A` a `5H`. Il codice di verifica e quello di recupero password vengono inviati via email e scadono dopo 10 minuti.
 
-Copia `.env.example` in `.env` e personalizza i valori:
+## Variabili d'ambiente
 
-```bash
-cp .env.example .env
-```
+Copia `.env.example` in `.env` per lo sviluppo locale. Non committare mai `.env` o credenziali.
 
-Variabili principali:
+- `DATABASE_URL`: stringa PostgreSQL Neon, usando l'URL pooled fornito da Neon
+- `SESSION_SECRET`: segreto lungo e casuale per firmare le sessioni
+- `RESEND_API_KEY`: chiave API di Resend
+- `EMAIL_FROM`: mittente autorizzato su Resend, per esempio `Corridoio <noreply@liceoleonardomi.edu.it>`
+- `ALLOWED_CLASSES`: classi autorizzate, separate da virgola (default: `1A`–`5H`)
+- `MODERATOR_EMAILS`: email scolastiche abilitate alla moderazione, separate da virgola
+- `PORT`: porta locale (default: `3000`)
 
-- `SESSION_SECRET`: stringa segreta per le sessioni
-- `ALLOWED_SCHOOL_DOMAINS`: domini email scolastici autorizzati, separati da virgola
-- `ALLOWED_CLASSES`: classi autorizzate, separati da virgola
-- `PORT`: porta del server in produzione
+Il database e la tabella delle sessioni vengono inizializzati automaticamente al primo avvio. In produzione, i dati non sono memorizzati sul filesystem effimero di Vercel.
 
 ## Avvio locale
 
@@ -29,21 +31,21 @@ npm install
 npm start
 ```
 
-## Deploy reale
+Il server richiede `DATABASE_URL` e `SESSION_SECRET`; le operazioni di registrazione e recupero password richiedono anche `RESEND_API_KEY` e `EMAIL_FROM`.
 
-### Render
+## Deploy su Vercel
 
-1. Connetti il repository a Render
-2. Imposta build command: `npm install`
-3. Imposta start command: `npm start`
-4. Aggiungi le variabili d'ambiente da `.env.example`
-5. Pubblica il service
+1. Crea un database Neon e copia la sua pooled connection string in `DATABASE_URL`.
+2. In Resend, verifica il dominio mittente e crea una API key.
+3. Importa questo repository in Vercel.
+4. Aggiungi le variabili d'ambiente elencate sopra per gli ambienti Production e Preview.
+5. Imposta `MODERATOR_EMAILS` con l'indirizzo scolastico del moderatore iniziale.
+6. Esegui il deploy e prova registrazione, ricezione del codice, verifica, login e pubblicazione.
+7. Collega `corridoio.runs-on.dev` al dominio assegnato da Vercel. Usa esattamente il target CNAME mostrato da Vercel/Runs On e attendi l'attivazione automatica di HTTPS.
 
-### Docker
+## Docker
 
 ```bash
 docker build -t corridoio .
 docker run -p 3000:3000 --env-file .env corridoio
 ```
-
-L'app accetta solo utenti con email scolastica riconosciuta e associa l'account alla classe scelta.

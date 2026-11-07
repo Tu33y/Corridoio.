@@ -7,8 +7,6 @@ const state = {
   composer: { open: false, text: '', image: '', scope: 'classe', options: ['', ''], poll: false },
   filters: { scope: 0, sort: 'rec', q: '' },
   moderation: [],
-  verificationCode: null,
-  userIdForReset: null,
 };
 
 function esc(value) {
@@ -23,9 +21,21 @@ async function api(path, options = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.error || 'Errore di richiesta');
+    const error = new Error(data.error || 'Errore di richiesta');
+    error.data = data;
+    throw error;
   }
   return data;
+}
+
+function getSchoolClasses() {
+  return Array.from({ length: 5 }, (_, year) => 'ABCDEFGH'.split('').map((letter) => `${year + 1}${letter}`)).flat();
+}
+
+function getSchoolClassOptions(selectedClass) {
+  return getSchoolClasses()
+    .map((cls) => '<option value="' + cls + '" ' + (selectedClass === cls ? 'selected' : '') + '>' + cls + '</option>')
+    .join('');
 }
 
 function setError(msg) {
@@ -56,26 +66,26 @@ function allUsersVisiblePosts(posts) {
 function renderAuth() {
   const h = '<div class="auth"><h1 class="brand">corridoio<i>.</i></h1>';
   if (state.page === 'welcome') {
-    return h + '<h2 style="margin-top:50px">La community privata della tua scuola</h2><p class="lead">Domande, avvisi, sondaggi e discussioni. Solo per studenti verificati con email scolastica.</p><button class="btn" onclick="state.page=\'signup\'; render();">Crea account</button><button class="btn sec" onclick="state.page=\'login\'; render();">Accedi</button><div class="hint" style="margin-top:18px">Demo: puoi usare un indirizzo qualsiasi che finisca con @liceo-demo.it.</div></div>';
+    return h + '<h2 style="margin-top:50px">La community privata della tua scuola</h2><p class="lead">Domande, avvisi, sondaggi e discussioni. Solo per studenti con email scolastica verificata.</p><button class="btn" onclick="state.page=\'signup\'; render();">Crea account</button><button class="btn sec" onclick="state.page=\'login\'; render();">Accedi</button><div class="hint" style="margin-top:18px">Registrazione riservata agli account @liceoleonardomi.edu.it.</div></div>';
   }
   if (state.page === 'login') {
-    return h + '<h2>Accedi</h2><p class="lead">Bentornato.</p><div class="fld"><label for="login-email">Email scolastica</label><input id="login-email" type="email" value="'+esc(state.form.email||'')+'" oninput="state.form.email=this.value" /></div><div class="fld"><label for="login-pw">Password</label><input id="login-pw" type="password" value="'+esc(state.form.pw||'')+'" oninput="state.form.pw=this.value" /></div>' + (state.error ? '<div class="err">'+esc(state.error)+'</div>' : '') + '<button class="btn" onclick="login()">Accedi</button><button class="lnk" onclick="state.page=\'forgot\'; state.error=\'\'; render();">Password dimenticata?</button><br><button class="lnk" onclick="state.page=\'signup\'; state.error=\'\'; render();">Non hai un account? Registrati</button><div class="info">Account di prova moderatore: mod@liceo-demo.it · Moderatore1!</div></div>';
+    return h + '<h2>Accedi</h2><p class="lead">Bentornato.</p><div class="fld"><label for="login-email">Email scolastica</label><input id="login-email" type="email" value="'+esc(state.form.email||'')+'" oninput="state.form.email=this.value" /></div><div class="fld"><label for="login-pw">Password</label><input id="login-pw" type="password" value="'+esc(state.form.pw||'')+'" oninput="state.form.pw=this.value" /></div>' + (state.error ? '<div class="err">'+esc(state.error)+'</div>' : '') + '<button class="btn" onclick="login()">Accedi</button><button class="lnk" onclick="state.page=\'forgot\'; state.error=\'\'; render();">Password dimenticata?</button><br><button class="lnk" onclick="state.page=\'signup\'; state.error=\'\'; render();">Non hai un account? Registrati</button></div>';
   }
   if (state.page === 'signup') {
     return h + '<h2>I tuoi dati</h2><p class="lead">Nome e cognome restano privati: gli altri vedranno solo il nickname.</p><div class="fld"><label>Email scolastica</label><input type="email" value="'+esc(state.form.email||'')+'" oninput="state.form.email=this.value" /></div><div class="fld"><label>Nome</label><input value="'+esc(state.form.nome||'')+'" oninput="state.form.nome=this.value" /></div><div class="fld"><label>Cognome</label><input value="'+esc(state.form.cognome||'')+'" oninput="state.form.cognome=this.value" /></div><div class="fld"><label>Data di nascita</label><input type="date" value="'+esc(state.form.born||'')+'" oninput="state.form.born=this.value" /></div>' + (state.form.born && new Date().getFullYear() - new Date(state.form.born).getFullYear() < 14 ? '<div class="fld"><label>Email del genitore</label><input type="email" value="'+esc(state.form.parent||'')+'" oninput="state.form.parent=this.value" /></div>' : '') + (state.error ? '<div class="err">'+esc(state.error)+'</div>' : '') + '<button class="btn" onclick="continueSignup()">Continua</button><button class="lnk" onclick="state.page=\'welcome\'; state.error=\'\'; render();">Indietro</button></div>';
   }
   if (state.page === 'signup2') {
-    const clsOptions = ['1A','1B','2A','2B','3A','3B'].map((c) => '<option value="'+c+'" '+(state.form.cls===c?'selected':'')+'>'+c+'</option>').join('');
+    const clsOptions = getSchoolClassOptions(state.form.cls);
     return h + '<h2>Profilo e sicurezza</h2><p class="lead">Scegli come ti vedranno gli altri.</p><div class="fld"><label>Nickname pubblico</label><input value="'+esc(state.form.nick||'')+'" oninput="state.form.nick=this.value" /></div><div class="fld"><label>Classe</label><select onchange="state.form.cls=this.value">'+clsOptions+'</select></div><div class="fld"><label>Password</label><input type="password" value="'+esc(state.form.pw||'')+'" oninput="state.form.pw=this.value" /></div><div class="fld"><label>Ripeti password</label><input type="password" value="'+esc(state.form.pw2||'')+'" oninput="state.form.pw2=this.value" /></div><label class="chk"><input type="checkbox" checked="'+(state.form.accept ? 'checked' : 'unchecked')+'" onchange="state.form.accept=this.checked" /><span>Accetto le regole della community e l’informativa privacy.</span></label>' + (state.error ? '<div class="err">'+esc(state.error)+'</div>' : '') + '<button class="btn" onclick="register()">Crea account</button><button class="lnk" onclick="state.page=\'signup\'; state.error=\'\'; render();">Indietro</button></div>';
   }
   if (state.page === 'verify') {
-    return h + '<h2>Verifica la tua email</h2><p class="lead">Abbiamo inviato un codice a '+esc(state.form.email || '')+'.</p><div class="fld"><label>Codice a 6 cifre</label><input value="'+esc(state.form.code||'')+'" oninput="state.form.code=this.value" /></div><div class="info">Demo: in produzione i codici arrivano via email.<br><b>'+esc(state.verificationCode || '000000')+'</b></div>' + (state.error ? '<div class="err">'+esc(state.error)+'</div>' : '') + '<button class="btn" onclick="verifyCode()">Verifica</button><button class="lnk" onclick="resendCode()">Invia di nuovo</button></div>';
+    return h + '<h2>Verifica la tua email</h2><p class="lead">Abbiamo inviato un codice a '+esc(state.form.email || '')+'. Controlla anche la cartella spam.</p><div class="fld"><label>Codice a 6 cifre</label><input inputmode="numeric" autocomplete="one-time-code" value="'+esc(state.form.code||'')+'" oninput="state.form.code=this.value" /></div>' + (state.error ? '<div class="err">'+esc(state.error)+'</div>' : '') + '<button class="btn" onclick="verifyCode()">Verifica</button><button class="lnk" onclick="resendCode()">Invia di nuovo</button></div>';
   }
   if (state.page === 'forgot') {
     return h + '<h2>Recupera la password</h2><p class="lead">Ti invieremo un codice per sceglierne una nuova.</p><div class="fld"><label>Email scolastica</label><input type="email" value="'+esc(state.form.email||'')+'" oninput="state.form.email=this.value" /></div>' + (state.error ? '<div class="err">'+esc(state.error)+'</div>' : '') + '<button class="btn" onclick="forgotPassword()">Invia codice</button><button class="lnk" onclick="state.page=\'login\'; state.error=\'\'; render();">Torna all’accesso</button></div>';
   }
   if (state.page === 'reset') {
-    return h + '<h2>Nuova password</h2><div class="fld"><label>Codice a 6 cifre</label><input value="'+esc(state.form.code||'')+'" oninput="state.form.code=this.value" /></div><div class="fld"><label>Nuova password</label><input type="password" value="'+esc(state.form.pw||'')+'" oninput="state.form.pw=this.value" /></div><div class="info">Demo: <b>'+esc(state.verificationCode || '000000')+'</b></div>' + (state.error ? '<div class="err">'+esc(state.error)+'</div>' : '') + '<button class="btn" onclick="resetPassword()">Salva password</button></div>';
+    return h + '<h2>Nuova password</h2><p class="lead">Inserisci il codice ricevuto via email.</p><div class="fld"><label>Codice a 6 cifre</label><input inputmode="numeric" autocomplete="one-time-code" value="'+esc(state.form.code||'')+'" oninput="state.form.code=this.value" /></div><div class="fld"><label>Nuova password</label><input type="password" value="'+esc(state.form.pw||'')+'" oninput="state.form.pw=this.value" /></div>' + (state.error ? '<div class="err">'+esc(state.error)+'</div>' : '') + '<button class="btn" onclick="resetPassword()">Salva password</button></div>';
   }
   return h;
 }
@@ -124,7 +134,7 @@ function render() {
     app.innerHTML = renderHome();
   } else if (state.page === 'profile' || state.page === 'profile-edit' || state.page === 'password-change') {
     if (state.page === 'profile-edit') {
-      app.innerHTML = '<h2>Profilo</h2><div class="card"><div class="fld"><label>Nickname</label><input value="' + esc(state.form.nick || state.user.nick) + '" oninput="state.form.nick=this.value" /></div><div class="fld"><label>Classe</label><select onchange="state.form.cls=this.value"><option value="1A" ' + (state.form.cls === '1A' ? 'selected' : '') + '>1A</option><option value="1B" ' + (state.form.cls === '1B' ? 'selected' : '') + '>1B</option><option value="2A" ' + (state.form.cls === '2A' ? 'selected' : '') + '>2A</option><option value="2B" ' + (state.form.cls === '2B' ? 'selected' : '') + '>2B</option><option value="3A" ' + (state.form.cls === '3A' ? 'selected' : '') + '>3A</option><option value="3B" ' + (state.form.cls === '3B' ? 'selected' : '') + '>3B</option></select></div>' + (state.error ? '<div class="err">' + esc(state.error) + '</div>' : '') + '<button class="btn" onclick="updateProfile()">Salva</button><button class="lnk" onclick="state.page=\'profile\'; state.error=\'\'; render();">Indietro</button></div>';
+        app.innerHTML = '<h2>Profilo</h2><div class="card"><div class="fld"><label>Nickname</label><input value="' + esc(state.form.nick || state.user.nick) + '" oninput="state.form.nick=this.value" /></div><div class="fld"><label>Classe</label><select onchange="state.form.cls=this.value">' + getSchoolClassOptions(state.form.cls) + '</select></div>' + (state.error ? '<div class="err">' + esc(state.error) + '</div>' : '') + '<button class="btn" onclick="updateProfile()">Salva</button><button class="lnk" onclick="state.page=\'profile\'; state.error=\'\'; render();">Indietro</button></div>';
       return;
     }
     if (state.page === 'password-change') {
@@ -193,6 +203,10 @@ async function login() {
     await loadPosts();
     render();
   } catch (err) {
+    if (err.data?.verificationRequired) {
+      state.page = 'verify';
+      state.form.code = '';
+    }
     state.error = err.message;
     render();
   }
@@ -207,8 +221,8 @@ async function continueSignup() {
     render();
     return;
   }
-  if (!/^[^@\s]+@[^@\s]+\.[a-z]+$/i.test(email) || !email.endsWith('@liceo-demo.it')) {
-    state.error = 'Usa un indirizzo della scuola.';
+  if (!/^[^@\s]+@liceoleonardomi\.edu\.it$/i.test(email)) {
+    state.error = 'Usa il tuo indirizzo @liceoleonardomi.edu.it.';
     render();
     return;
   }
@@ -218,19 +232,25 @@ async function continueSignup() {
     return;
   }
   state.page = 'signup2';
-  state.form.cls = state.form.cls || '3A';
+  state.form.cls = state.form.cls || '1A';
   state.form.accept = true;
   render();
 }
 
 async function register() {
   state.error = '';
-  const payload = { email: state.form.email, nome: state.form.nome, cognome: state.form.cognome, born: state.form.born, parent: state.form.parent, nick: state.form.nick, pw: state.form.pw, cls: state.form.cls, school: 'liceo-demo', accept: !!state.form.accept };
+  if (state.form.pw !== state.form.pw2) {
+    state.error = 'Le password non coincidono.';
+    render();
+    return;
+  }
+  const payload = { email: state.form.email, nome: state.form.nome, cognome: state.form.cognome, born: state.form.born, parent: state.form.parent, nick: state.form.nick, pw: state.form.pw, cls: state.form.cls, accept: !!state.form.accept };
   try {
-    const data = await api('/api/register', { method: 'POST', body: JSON.stringify(payload) });
-    state.verificationCode = data.verificationCode;
+    await api('/api/register', { method: 'POST', body: JSON.stringify(payload) });
     state.form.email = payload.email;
+    state.form.code = '';
     state.page = 'verify';
+    state.error = '';
     render();
   } catch (err) {
     state.error = err.message;
@@ -254,9 +274,8 @@ async function verifyCode() {
 
 async function resendCode() {
   try {
-    const data = await api('/api/register', { method: 'POST', body: JSON.stringify({ email: state.form.email, nome: state.user?.nome || 'Demo', cognome: state.user?.cognome || 'Demo', born: state.user?.born || '2009-01-01', parent: state.user?.parent || '', nick: state.user?.nick || 'demo', pw: 'Password1!', cls: state.user?.cls || '3A', school: 'liceo-demo', accept: true }) });
-    state.verificationCode = data.verificationCode;
-    setToast('Nuovo codice inviato');
+    const data = await api('/api/resend-verification', { method: 'POST', body: JSON.stringify({}) });
+    setToast(data.message || 'Nuovo codice inviato');
   } catch (err) {
     setError(err.message);
   }
@@ -265,9 +284,8 @@ async function resendCode() {
 async function forgotPassword() {
   try {
     const data = await api('/api/forgot', { method: 'POST', body: JSON.stringify({ email: state.form.email }) });
-    state.verificationCode = data.code;
-    state.userIdForReset = data.userId;
     state.page = 'reset';
+    state.form.code = '';
     state.error = '';
     setToast(data.message || 'Codice inviato');
     render();
@@ -279,7 +297,7 @@ async function forgotPassword() {
 
 async function resetPassword() {
   try {
-    await api('/api/reset-password', { method: 'POST', body: JSON.stringify({ userId: state.userIdForReset, code: state.form.code, pw: state.form.pw }) });
+    await api('/api/reset-password', { method: 'POST', body: JSON.stringify({ code: state.form.code, pw: state.form.pw }) });
     state.form = {};
     state.page = 'login';
     setToast('Password aggiornata');
