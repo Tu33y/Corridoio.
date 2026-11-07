@@ -9,3 +9,6 @@ coverage
 *.log
 data/*.db
 .neon
+
+.env*
+!.env.example

@@ -2,7 +2,7 @@ const express = require('express');
 const session = require('express-session');
 const pg = require('pg');
 const connectPgSimple = require('connect-pg-simple');
-require('dotenv').config();
+require('dotenv').config({ path: ['.env.local', '.env'] });
 const path = require('path');
 const crypto = require('crypto');
 
