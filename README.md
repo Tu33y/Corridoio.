@@ -10,6 +10,8 @@ Community scolastica full-stack con account verificati tramite email, classi, po
 
 La registrazione è limitata a indirizzi `@liceoleonardomi.edu.it`. Le classi ammesse vanno da `1A` a `5H`. Il codice di verifica e quello di recupero password vengono inviati via email e scadono dopo 10 minuti.
 
+La verifica email conferma il possesso di una casella del dominio scolastico; la classe selezionata resta autodichiarata e non viene confrontata con un registro ufficiale. Per verificarla davvero serve un elenco autorizzato fornito dalla scuola o un processo di conferma gestito da personale scolastico.
+
 ## Variabili d'ambiente
 
 Copia `.env.example` in `.env` per lo sviluppo locale. Non committare mai `.env` o credenziali.
