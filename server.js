@@ -10,9 +10,7 @@ const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const DATABASE_URL = process.env.DATABASE_URL;
 const SESSION_SECRET = process.env.SESSION_SECRET || (!process.env.VERCEL ? 'local-development-only-secret' : '');
-const SCHOOL_DOMAIN = 'liceoleonardomi.edu.it';
 const SCHOOL_NAME = 'liceoleonardomi';
-const ALLOWED_SCHOOL_DOMAINS = [SCHOOL_DOMAIN];
 const ALLOWED_CLASSES = process.env.ALLOWED_CLASSES
   ? process.env.ALLOWED_CLASSES.split(',').map((cls) => cls.trim().toUpperCase()).filter(Boolean)
   : Array.from({ length: 5 }, (_, year) => 'ABCDEFGH'.split('').map((letter) => `${year + 1}${letter}`)).flat();
@@ -75,10 +73,8 @@ function asyncDb(method, query, params = []) {
   });
 }
 
-function schoolDomainMatch(email) {
-  if (!/^[^@\s]+@[^@\s]+\.[a-z]+$/i.test(email)) return false;
-  const domain = email.split('@')[1]?.toLowerCase();
-  return !!domain && ALLOWED_SCHOOL_DOMAINS.includes(domain);
+function isValidEmailAddress(email) {
+  return /^[^@\s]+@[^@\s]+\.[a-z]+$/i.test(email);
 }
 
 function codeHash(code) {
@@ -418,8 +414,8 @@ app.post('/api/register', async (req, res) => {
 
   const normalizedClass = normalizeClassName(cls);
 
-  if (!normalizedEmail || !schoolDomainMatch(normalizedEmail)) {
-    return res.status(400).json({ error: `Email non valida. Usa un account scolastico autorizzato: ${ALLOWED_SCHOOL_DOMAINS.join(', ')}` });
+  if (!isValidEmailAddress(normalizedEmail)) {
+    return res.status(400).json({ error: 'Inserisci un indirizzo email valido.' });
   }
   if (!nome || !cognome || !born || !nick || !pw) {
     return res.status(400).json({ error: 'Completa tutti i campi richiesti.' });
@@ -512,7 +508,7 @@ app.post('/api/logout', (req, res) => {
 app.post('/api/forgot', async (req, res) => {
   const email = String(req.body?.email || '').trim().toLowerCase();
   const user = await getUserByEmail(email);
-  if (user && schoolDomainMatch(email)) {
+  if (user && isValidEmailAddress(email)) {
     try {
       await issueCode(user.id, email, 'reset');
       req.session.resetUserId = user.id;

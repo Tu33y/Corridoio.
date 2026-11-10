@@ -8,9 +8,9 @@ Community scolastica full-stack con account verificati tramite email, classi, po
 - PostgreSQL gestito (Neon consigliato per Vercel)
 - Un dominio mittente verificato su Resend
 
-La registrazione è limitata a indirizzi `@liceoleonardomi.edu.it`. Le classi ammesse vanno da `1A` a `5H`. Il codice di verifica e quello di recupero password vengono inviati via email e scadono dopo 10 minuti.
+La registrazione accetta qualsiasi indirizzo email valido e accessibile, verificato tramite un codice che scade dopo 10 minuti. Le classi ammesse vanno da `1A` a `5H`.
 
-La verifica email conferma il possesso di una casella del dominio scolastico; la classe selezionata resta autodichiarata e non viene confrontata con un registro ufficiale. Per verificarla davvero serve un elenco autorizzato fornito dalla scuola o un processo di conferma gestito da personale scolastico.
+La verifica email conferma il possesso della casella, ma non l'appartenenza alla scuola. La classe selezionata resta autodichiarata e non viene confrontata con un registro ufficiale. Per verificare l'appartenenza serve un elenco autorizzato fornito dalla scuola o un processo di conferma gestito da personale scolastico.
 
 ## Variabili d'ambiente
 
@@ -19,9 +19,9 @@ Copia `.env.example` in `.env` per lo sviluppo locale. Non committare mai `.env`
 - `DATABASE_URL`: stringa PostgreSQL Neon, usando l'URL pooled fornito da Neon
 - `SESSION_SECRET`: segreto lungo e casuale per firmare le sessioni
 - `RESEND_API_KEY`: chiave API di Resend
-- `EMAIL_FROM`: mittente autorizzato su Resend, per esempio `Corridoio <noreply@liceoleonardomi.edu.it>`
+- `EMAIL_FROM`: mittente autorizzato su Resend, per esempio `Corridoio <noreply@corridoio.runs-on.dev>`
 - `ALLOWED_CLASSES`: classi autorizzate, separate da virgola (default: `1A`–`5H`)
-- `MODERATOR_EMAILS`: email scolastiche abilitate alla moderazione, separate da virgola
+- `MODERATOR_EMAILS`: indirizzi email abilitati alla moderazione, separati da virgola
 - `PORT`: porta locale (default: `3000`)
 
 Il database e la tabella delle sessioni vengono inizializzati automaticamente al primo avvio. In produzione, i dati non sono memorizzati sul filesystem effimero di Vercel.
