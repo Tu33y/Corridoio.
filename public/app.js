@@ -7,6 +7,7 @@ const state = {
   composer: { open: false, text: '', image: '', scope: 'anno', options: ['', ''], poll: false },
   filters: { scope: 0, sort: 'rec', q: '' },
   moderation: [],
+  oauth: { googleClientId: '', appleClientId: '', appleRedirectUri: '', googleNonce: '', googleNoncePromise: null, googleInitializedNonce: '' },
 };
 
 function esc(value) {
@@ -38,6 +39,182 @@ function renderBackButton(page, label) {
   return '<button class="lnk back" onclick="state.page=\'' + page + '\'; state.error=\'\'; render();">← ' + label + '</button>';
 }
 
+function getAge(born) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(born || ''))) return -1;
+  const birthDate = new Date(born + 'T00:00:00Z');
+  if (Number.isNaN(birthDate.getTime()) || birthDate.toISOString().slice(0, 10) !== born) return -1;
+  const today = new Date();
+  let age = today.getUTCFullYear() - birthDate.getUTCFullYear();
+  if (today.getUTCMonth() < birthDate.getUTCMonth()
+      || (today.getUTCMonth() === birthDate.getUTCMonth() && today.getUTCDate() < birthDate.getUTCDate())) {
+    age -= 1;
+  }
+  return age;
+}
+
+function renderOAuthActions() {
+  if (!state.oauth.googleClientId && !state.oauth.appleClientId) return '';
+  return '<div class="oauth-separator">oppure continua con</div><div class="oauth-buttons">' +
+    (state.oauth.googleClientId ? '<div id="google-button"></div>' : '') +
+    (state.oauth.appleClientId ? '<button class="oauth-btn apple" onclick="signInWithApple()">Continua con Apple</button>' : '') +
+    '</div>';
+}
+
+function renderOAuthButtons() {
+  const container = document.getElementById('google-button');
+  if (!container || !state.oauth.googleClientId) return;
+  if (!window.google?.accounts?.id) {
+    container.textContent = 'Google non è disponibile. Ricarica la pagina e riprova.';
+    return;
+  }
+
+  if (!state.oauth.googleNonce && !state.oauth.googleNoncePromise) {
+    state.oauth.googleNoncePromise = api('/api/oauth/nonce', {
+      method: 'POST',
+      body: JSON.stringify({ provider: 'google' }),
+    }).then((data) => {
+      state.oauth.googleNonce = data.nonce;
+      state.oauth.googleNoncePromise = null;
+      renderOAuthButtons();
+    }).catch((error) => {
+      state.oauth.googleNoncePromise = null;
+      container.textContent = error.message;
+    });
+  }
+  if (!state.oauth.googleNonce) return;
+
+  if (state.oauth.googleInitializedNonce !== state.oauth.googleNonce) {
+    window.google.accounts.id.initialize({
+      client_id: state.oauth.googleClientId,
+      nonce: state.oauth.googleNonce,
+      callback: handleGoogleCredential,
+      auto_select: false,
+    });
+    state.oauth.googleInitializedNonce = state.oauth.googleNonce;
+  }
+  window.google.accounts.id.renderButton(container, {
+    theme: 'outline',
+    size: 'large',
+    text: 'continue_with',
+    shape: 'rectangular',
+    width: Math.min(360, container.clientWidth || 360),
+  });
+}
+
+async function completeOAuth(provider, credential, profile) {
+  state.error = '';
+  try {
+    const data = await api('/api/oauth/' + provider, {
+      method: 'POST',
+      body: JSON.stringify({ credential, profile }),
+    });
+    state.oauth.googleNonce = '';
+    state.oauth.googleNoncePromise = null;
+    state.oauth.googleInitializedNonce = '';
+    if (data.needsProfile) {
+      state.user = null;
+      state.page = 'oauth-profile';
+      state.form = {
+        email: data.profile.email,
+        nome: data.profile.nome || '',
+        cognome: data.profile.cognome || '',
+        year: '1',
+        accept: false,
+      };
+    } else {
+      state.user = data.user;
+      state.page = 'home';
+      state.form = {};
+      await loadPosts();
+    }
+    render();
+  } catch (error) {
+    state.oauth.googleNonce = '';
+    state.oauth.googleNoncePromise = null;
+    state.oauth.googleInitializedNonce = '';
+    state.error = error.message;
+    render();
+  }
+}
+
+function handleGoogleCredential(response) {
+  if (!response?.credential) {
+    state.error = 'Google non ha restituito una credenziale valida.';
+    render();
+    return;
+  }
+  completeOAuth('google', response.credential);
+}
+
+async function signInWithApple() {
+  if (!window.AppleID?.auth || !state.oauth.appleClientId || !state.oauth.appleRedirectUri) {
+    state.error = 'Accesso con Apple non disponibile. Ricarica la pagina e riprova.';
+    render();
+    return;
+  }
+
+  state.error = '';
+  try {
+    const { nonce } = await api('/api/oauth/nonce', {
+      method: 'POST',
+      body: JSON.stringify({ provider: 'apple' }),
+    });
+    window.AppleID.auth.init({
+      clientId: state.oauth.appleClientId,
+      scope: 'name email',
+      redirectURI: state.oauth.appleRedirectUri,
+      nonce,
+      usePopup: true,
+    });
+    const response = await window.AppleID.auth.signIn();
+    if (!response?.authorization?.id_token) throw new Error('Apple non ha restituito una credenziale valida.');
+    await completeOAuth('apple', response.authorization.id_token, response.user);
+  } catch (error) {
+    state.oauth.googleNonce = '';
+    state.oauth.googleNoncePromise = null;
+    state.oauth.googleInitializedNonce = '';
+    state.error = error.message || 'Accesso con Apple non riuscito. Riprova.';
+    render();
+  }
+}
+
+async function registerOAuthProfile() {
+  state.error = '';
+  try {
+    const payload = {
+      nome: state.form.nome,
+      cognome: state.form.cognome,
+      born: state.form.born,
+      parent: state.form.parent,
+      nick: state.form.nick,
+      year: state.form.year,
+      accept: !!state.form.accept,
+    };
+    const data = await api('/api/oauth/profile', { method: 'POST', body: JSON.stringify(payload) });
+    state.user = data.user;
+    state.page = 'home';
+    state.form = {};
+    await loadPosts();
+    render();
+  } catch (error) {
+    state.error = error.message;
+    render();
+  }
+}
+
+async function cancelOAuthProfile() {
+  try {
+    await api('/api/oauth/cancel', { method: 'POST', body: JSON.stringify({}) });
+    state.page = 'welcome';
+    state.form = {};
+    state.error = '';
+    render();
+  } catch (error) {
+    state.error = error.message;
+    render();
+  }
+}
+
 function setError(msg) {
   state.error = msg;
   render();
@@ -66,10 +243,10 @@ function allUsersVisiblePosts(posts) {
 function renderAuth() {
   const h = '<div class="auth"><h1 class="brand">corridoio<i>.</i></h1>';
   if (state.page === 'welcome') {
-    return h + '<h2 style="margin-top:50px">La community della tua scuola</h2><p class="lead">Domande, avvisi, sondaggi e discussioni. Registrati con qualsiasi indirizzo email accessibile: ti invieremo un codice per verificarlo.</p><button class="btn" onclick="state.page=\'signup\'; render();">Crea account</button><button class="btn sec" onclick="state.page=\'login\'; render();">Accedi</button><div class="hint" style="margin-top:18px">I post possono essere condivisi con il tuo anno o con tutta la scuola.</div></div>';
+    return h + '<h2 style="margin-top:50px">La community della tua scuola</h2><p class="lead">Domande, avvisi, sondaggi e discussioni. Registrati con qualsiasi indirizzo email accessibile: ti invieremo un codice per verificarlo.</p><button class="btn" onclick="state.page=\'signup\'; render();">Crea account</button><button class="btn sec" onclick="state.page=\'login\'; render();">Accedi</button>' + renderOAuthActions() + '<div class="hint" style="margin-top:18px">I post possono essere condivisi con il tuo anno o con tutta la scuola.</div></div>';
   }
   if (state.page === 'login') {
-    return h + '<h2>Accedi</h2><p class="lead">Bentornato.</p><div class="fld"><label for="login-email">Email</label><input id="login-email" type="email" value="'+esc(state.form.email||'')+'" oninput="state.form.email=this.value" /></div><div class="fld"><label for="login-pw">Password</label><input id="login-pw" type="password" value="'+esc(state.form.pw||'')+'" oninput="state.form.pw=this.value" /></div>' + (state.error ? '<div class="err">'+esc(state.error)+'</div>' : '') + '<button class="btn" onclick="login()">Accedi</button><button class="lnk" onclick="state.page=\'forgot\'; state.error=\'\'; render();">Password dimenticata?</button><br><button class="lnk" onclick="state.page=\'signup\'; state.error=\'\'; render();">Non hai un account? Registrati</button></div>';
+    return h + '<h2>Accedi</h2><p class="lead">Bentornato.</p><div class="fld"><label for="login-email">Email</label><input id="login-email" type="email" value="'+esc(state.form.email||'')+'" oninput="state.form.email=this.value" /></div><div class="fld"><label for="login-pw">Password</label><input id="login-pw" type="password" value="'+esc(state.form.pw||'')+'" oninput="state.form.pw=this.value" /></div>' + (state.error ? '<div class="err">'+esc(state.error)+'</div>' : '') + '<button class="btn" onclick="login()">Accedi</button>' + renderOAuthActions() + '<button class="lnk" onclick="state.page=\'forgot\'; state.error=\'\'; render();">Password dimenticata?</button><br><button class="lnk" onclick="state.page=\'signup\'; state.error=\'\'; render();">Non hai un account? Registrati</button>' + renderBackButton('welcome', 'Indietro') + '</div>';
   }
   if (state.page === 'signup') {
     return h + '<h2>I tuoi dati</h2><p class="lead">Nome e cognome restano privati: gli altri vedranno solo il nickname.</p><div class="fld"><label>Email</label><input type="email" value="'+esc(state.form.email||'')+'" oninput="state.form.email=this.value" /></div><div class="fld"><label>Nome</label><input value="'+esc(state.form.nome||'')+'" oninput="state.form.nome=this.value" /></div><div class="fld"><label>Cognome</label><input value="'+esc(state.form.cognome||'')+'" oninput="state.form.cognome=this.value" /></div><div class="fld"><label>Data di nascita</label><input type="date" value="'+esc(state.form.born||'')+'" oninput="state.form.born=this.value" /></div>' + (state.form.born && new Date().getFullYear() - new Date(state.form.born).getFullYear() < 14 ? '<div class="fld"><label>Email del genitore</label><input type="email" value="'+esc(state.form.parent||'')+'" oninput="state.form.parent=this.value" /></div>' : '') + (state.error ? '<div class="err">'+esc(state.error)+'</div>' : '') + '<button class="btn" onclick="continueSignup()">Continua</button>' + renderBackButton('welcome', 'Indietro') + '</div>';
@@ -86,6 +263,10 @@ function renderAuth() {
   }
   if (state.page === 'reset') {
     return h + '<h2>Nuova password</h2><p class="lead">Inserisci il codice ricevuto via email.</p><div class="fld"><label>Codice a 6 cifre</label><input inputmode="numeric" autocomplete="one-time-code" value="'+esc(state.form.code||'')+'" oninput="state.form.code=this.value" /></div><div class="fld"><label>Nuova password</label><input type="password" value="'+esc(state.form.pw||'')+'" oninput="state.form.pw=this.value" /></div>' + (state.error ? '<div class="err">'+esc(state.error)+'</div>' : '') + '<button class="btn" onclick="resetPassword()">Salva password</button>' + renderBackButton('login', 'Torna all’accesso') + '</div>';
+  }
+  if (state.page === 'oauth-profile') {
+    const age = getAge(state.form.born);
+    return h + '<h2>Completa il profilo</h2><p class="lead">Usa il tuo account social verificato e completa i dati necessari per Corridoio.</p><div class="fld"><label>Email verificata</label><input type="email" value="' + esc(state.form.email || '') + '" readonly /></div><div class="fld"><label>Nome</label><input value="' + esc(state.form.nome || '') + '" oninput="state.form.nome=this.value" /></div><div class="fld"><label>Cognome</label><input value="' + esc(state.form.cognome || '') + '" oninput="state.form.cognome=this.value" /></div><div class="fld"><label>Data di nascita</label><input type="date" value="' + esc(state.form.born || '') + '" oninput="state.form.born=this.value; render();" /></div>' + (state.form.born && age < 14 ? '<div class="fld"><label>Email del genitore</label><input type="email" value="' + esc(state.form.parent || '') + '" oninput="state.form.parent=this.value" /></div>' : '') + '<div class="fld"><label>Nickname pubblico</label><input value="' + esc(state.form.nick || '') + '" oninput="state.form.nick=this.value" /></div><div class="fld"><label>Anno scolastico</label><select onchange="state.form.year=this.value">' + getSchoolYearOptions(state.form.year || '1') + '</select></div><label class="chk"><input type="checkbox" ' + (state.form.accept ? 'checked' : '') + ' onchange="state.form.accept=this.checked" /><span>Accetto le regole della community e l’informativa privacy.</span></label>' + (state.error ? '<div class="err">' + esc(state.error) + '</div>' : '') + '<button class="btn" onclick="registerOAuthProfile()">Crea account</button>' + '<button class="lnk" onclick="cancelOAuthProfile()">Annulla</button></div>';
   }
   return h;
 }
@@ -126,6 +307,7 @@ function render() {
   const app = document.getElementById('app');
   if (!state.user) {
     app.innerHTML = renderAuth();
+    renderOAuthButtons();
     return;
   }
 
@@ -166,13 +348,29 @@ function handleComposerFile(input) {
 
 async function loadSession() {
   try {
+    state.oauth = { ...state.oauth, ...(await api('/api/oauth/config')) };
+  } catch (error) {
+    console.error('OAuth configuration could not be loaded', error);
+  }
+
+  try {
     const data = await api('/api/session');
     state.user = data.user;
     if (state.user) {
       state.page = 'home';
       await loadPosts();
+    } else if (data.oauthProfile) {
+      state.page = 'oauth-profile';
+      state.form = {
+        email: data.oauthProfile.email,
+        nome: data.oauthProfile.nome || '',
+        cognome: data.oauthProfile.cognome || '',
+        year: '1',
+        accept: false,
+      };
     }
   } catch (err) {
+    console.error('Session could not be restored', err);
     state.user = null;
   }
   render();
@@ -422,6 +620,10 @@ window.addEventListener('keydown', (e) => {
 
 window.render = render;
 window.login = login;
+window.handleGoogleCredential = handleGoogleCredential;
+window.signInWithApple = signInWithApple;
+window.registerOAuthProfile = registerOAuthProfile;
+window.cancelOAuthProfile = cancelOAuthProfile;
 window.register = register;
 window.continueSignup = continueSignup;
 window.verifyCode = verifyCode;

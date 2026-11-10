@@ -17,10 +17,25 @@ const MODERATOR_EMAILS = (process.env.MODERATOR_EMAILS || '')
   .filter(Boolean);
 const EMAIL_FROM = process.env.EMAIL_FROM;
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const OAUTH_PROVIDERS = {
+  google: {
+    clientId: process.env.GOOGLE_CLIENT_ID,
+    issuer: ['https://accounts.google.com', 'accounts.google.com'],
+    jwksUrl: 'https://www.googleapis.com/oauth2/v3/certs',
+  },
+  apple: {
+    clientId: process.env.APPLE_CLIENT_ID,
+    redirectUri: process.env.APPLE_REDIRECT_URI,
+    issuer: 'https://appleid.apple.com',
+    jwksUrl: 'https://appleid.apple.com/auth/keys',
+  },
+};
 const pool = new pg.Pool({ connectionString: DATABASE_URL, max: 5 });
 const PgSessionStore = connectPgSimple(session);
 const sessionStore = new PgSessionStore({ pool, tableName: 'user_sessions', createTableIfMissing: true });
 let databaseReady;
+let joseModule;
+const oauthJwks = new Map();
 
 function sqlPlaceholders(query) {
   let index = 0;
@@ -68,6 +83,128 @@ function asyncDb(method, query, params = []) {
       else resolve(result);
     });
   });
+}
+
+function saveSession(req) {
+  return new Promise((resolve, reject) => {
+    req.session.save((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+function establishSession(req, userId) {
+  return new Promise((resolve, reject) => {
+    req.session.regenerate((error) => {
+      if (error) return reject(error);
+      req.session.userId = userId;
+      req.session.save((saveError) => (saveError ? reject(saveError) : resolve()));
+    });
+  });
+}
+
+async function verifyOAuthCredential(provider, credential, nonce) {
+  const config = OAUTH_PROVIDERS[provider];
+  if (!config?.clientId) {
+    const error = new Error(`Accesso con ${provider} non configurato.`);
+    error.statusCode = 503;
+    throw error;
+  }
+  if (typeof credential !== 'string' || credential.length > 20000) {
+    const error = new Error('Credenziale OAuth non valida.');
+    error.statusCode = 401;
+    throw error;
+  }
+
+  joseModule ||= import('jose');
+  const jose = await joseModule;
+  if (!oauthJwks.has(provider)) {
+    oauthJwks.set(provider, jose.createRemoteJWKSet(new URL(config.jwksUrl)));
+  }
+
+  let payload;
+  try {
+    ({ payload } = await jose.jwtVerify(credential, oauthJwks.get(provider), {
+      issuer: config.issuer,
+      audience: config.clientId,
+    }));
+  } catch (error) {
+    if (/^ERR_(JWT|JWS|JWKS_NO_MATCHING_KEY)/.test(error.code || '')) {
+      const invalid = new Error('La verifica con il provider non è riuscita. Riprova.');
+      invalid.statusCode = 401;
+      throw invalid;
+    }
+    throw error;
+  }
+
+  const expectedNonce = provider === 'apple'
+    ? crypto.createHash('sha256').update(nonce).digest('hex')
+    : nonce;
+  if (!payload.sub || typeof payload.sub !== 'string' || payload.nonce !== expectedNonce) {
+    const error = new Error('La verifica con il provider non è riuscita. Riprova.');
+    error.statusCode = 401;
+    throw error;
+  }
+
+  const email = typeof payload.email === 'string' ? payload.email.trim().toLowerCase() : '';
+  const emailVerified = payload.email_verified === true || payload.email_verified === 'true';
+  return {
+    provider,
+    subject: payload.sub,
+    email,
+    emailVerified,
+    firstName: typeof payload.given_name === 'string' ? payload.given_name.slice(0, 100) : '',
+    lastName: typeof payload.family_name === 'string' ? payload.family_name.slice(0, 100) : '',
+  };
+}
+
+async function attachOAuthAccount(provider, subject, userId) {
+  await asyncDb('run', `INSERT INTO oauth_accounts (provider, provider_user_id, user_id, created_at)
+    VALUES (?, ?, ?, ?) ON CONFLICT (provider, provider_user_id) DO NOTHING`,
+  [provider, subject, userId, Date.now()]);
+  const account = await asyncDb('get',
+    'SELECT user_id FROM oauth_accounts WHERE provider = ? AND provider_user_id = ?', [provider, subject]);
+  if (!account) throw new Error('OAuth account link was not persisted.');
+  return account.user_id;
+}
+
+async function createOAuthUser(identity, profile) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const role = MODERATOR_EMAILS.includes(identity.email) ? 'mod' : 'student';
+    const insertUser = await client.query(`INSERT INTO users
+      (id, email, nick, nome, cognome, school, cls, role, salt, password_hash, born, parent_email, verified, theme, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, NULL, $9, $10, 1, NULL, $11)
+      ON CONFLICT (email) DO NOTHING RETURNING id`,
+    [randomId('u'), identity.email, profile.nick, profile.nome, profile.cognome, SCHOOL_NAME, profile.year,
+      role, profile.born, profile.parent || null, Date.now()]);
+    let userId = insertUser.rows[0]?.id;
+    if (!userId) {
+      const existing = await client.query('SELECT id FROM users WHERE email = $1', [identity.email]);
+      if (!existing.rows[0]) throw new Error('Conflicting account could not be found.');
+      userId = existing.rows[0].id;
+      await client.query('UPDATE users SET verified = 1 WHERE id = $1', [userId]);
+      await client.query('DELETE FROM email_codes WHERE user_id = $1 AND purpose = $2', [userId, 'verify']);
+    }
+
+    await client.query(`INSERT INTO oauth_accounts (provider, provider_user_id, user_id, created_at)
+      VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
+    [identity.provider, identity.subject, userId, Date.now()]);
+    const account = await client.query(
+      'SELECT user_id FROM oauth_accounts WHERE provider = $1 AND provider_user_id = $2',
+      [identity.provider, identity.subject]);
+    if (!account.rows[0]) throw new Error('OAuth account link was not persisted.');
+    if (account.rows[0].user_id !== userId && insertUser.rows[0]?.id) {
+      await client.query('DELETE FROM users WHERE id = $1', [userId]);
+    }
+    userId = account.rows[0].user_id;
+    await client.query('COMMIT');
+    return userId;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 function isValidEmailAddress(email) {
@@ -150,6 +287,19 @@ function normalizeYear(value) {
   return match ? match[1] : '';
 }
 
+function calculateAge(born) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(born || ''))) return -1;
+  const birthDate = new Date(`${born}T00:00:00Z`);
+  if (Number.isNaN(birthDate.getTime()) || birthDate.toISOString().slice(0, 10) !== born) return -1;
+  const today = new Date();
+  let age = today.getUTCFullYear() - birthDate.getUTCFullYear();
+  if (today.getUTCMonth() < birthDate.getUTCMonth()
+      || (today.getUTCMonth() === birthDate.getUTCMonth() && today.getUTCDate() < birthDate.getUTCDate())) {
+    age -= 1;
+  }
+  return age;
+}
+
 function serializeUser(row) {
   if (!row) return null;
   return {
@@ -165,6 +315,7 @@ function serializeUser(row) {
     born: row.born,
     parent: row.parent_email,
     verified: !!row.verified,
+    hasPassword: Boolean(row.password_hash),
     createdAt: row.created_at,
   };
 }
@@ -367,12 +518,28 @@ async function initDatabase() {
     last_sent_at BIGINT NOT NULL,
     PRIMARY KEY (user_id, purpose)
   )`);
+  await asyncDb('run', `CREATE TABLE IF NOT EXISTS oauth_accounts (
+    provider TEXT NOT NULL,
+    provider_user_id TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at BIGINT NOT NULL,
+    PRIMARY KEY (provider, provider_user_id)
+  )`);
 }
 
 app.use(express.json({ limit: '4mb' }));
 app.use(express.urlencoded({ extended: true }));
 if (process.env.VERCEL || process.env.NODE_ENV === 'production') app.set('trust proxy', 1);
 app.use(express.static(path.join(__dirname, 'public')));
+app.get('/api/oauth/config', (req, res) => {
+  res.json({
+    googleClientId: OAUTH_PROVIDERS.google.clientId || '',
+    appleClientId: OAUTH_PROVIDERS.apple.clientId && OAUTH_PROVIDERS.apple.redirectUri
+      ? OAUTH_PROVIDERS.apple.clientId
+      : '',
+    appleRedirectUri: OAUTH_PROVIDERS.apple.redirectUri || '',
+  });
+});
 app.use(async (req, res, next) => {
   try {
     if (!databaseReady) {
@@ -401,9 +568,143 @@ function requireAuth(req, res, next) {
 }
 
 app.get('/api/session', async (req, res) => {
-  if (!req.session.userId) return res.json({ user: null });
+  if (!req.session.userId) {
+    const pending = req.session.oauthPending;
+    return res.json({
+      user: null,
+      oauthProfile: pending && pending.expiresAt > Date.now()
+        ? { email: pending.email, nome: pending.nome, cognome: pending.cognome }
+        : null,
+    });
+  }
   const user = await getUserById(req.session.userId);
   res.json({ user });
+});
+
+app.post('/api/oauth/cancel', (req, res) => {
+  req.session.oauthPending = null;
+  res.json({ success: true });
+});
+
+app.post('/api/oauth/nonce', (req, res) => {
+  const provider = String(req.body?.provider || '').toLowerCase();
+  if (!OAUTH_PROVIDERS[provider]) return res.status(400).json({ error: 'Provider non valido.' });
+  if (!OAUTH_PROVIDERS[provider].clientId) {
+    return res.status(503).json({ error: `Accesso con ${provider} non ancora configurato.` });
+  }
+
+  const nonce = crypto.randomBytes(32).toString('base64url');
+  req.session.oauthNonces = req.session.oauthNonces || {};
+  req.session.oauthNonces[provider] = { value: nonce, expiresAt: Date.now() + 5 * 60 * 1000 };
+  return res.json({ nonce });
+});
+
+app.post('/api/oauth/:provider', async (req, res) => {
+  const provider = String(req.params.provider || '').toLowerCase();
+  if (!OAUTH_PROVIDERS[provider]) return res.status(404).json({ error: 'Provider non supportato.' });
+  if (!OAUTH_PROVIDERS[provider].clientId) {
+    return res.status(503).json({ error: `Accesso con ${provider} non ancora configurato.` });
+  }
+
+  const nonceRecord = req.session.oauthNonces?.[provider];
+  if (req.session.oauthNonces) delete req.session.oauthNonces[provider];
+  await saveSession(req);
+  if (!nonceRecord || nonceRecord.expiresAt <= Date.now()) {
+    return res.status(401).json({ error: 'La richiesta di accesso è scaduta. Riprova.' });
+  }
+
+  let identity;
+  try {
+    identity = await verifyOAuthCredential(provider, req.body?.credential, nonceRecord.value);
+  } catch (error) {
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    throw error;
+  }
+
+  const linkedAccount = await asyncDb('get',
+    'SELECT user_id FROM oauth_accounts WHERE provider = ? AND provider_user_id = ?', [provider, identity.subject]);
+  if (linkedAccount) {
+    const user = await getUserById(linkedAccount.user_id);
+    if (!user) return res.status(401).json({ error: 'Account social non più disponibile.' });
+    await establishSession(req, user.id);
+    return res.json({ success: true, user: await getUserById(user.id) });
+  }
+
+  if (!identity.emailVerified || !isValidEmailAddress(identity.email)) {
+    return res.status(403).json({ error: 'Il provider non ha confermato un indirizzo email valido.' });
+  }
+
+  const existingUser = await getUserByEmail(identity.email);
+  if (existingUser) {
+    await asyncDb('run', 'UPDATE users SET verified = 1 WHERE id = ?', [existingUser.id]);
+    await asyncDb('run', 'DELETE FROM email_codes WHERE user_id = ? AND purpose = ?', [existingUser.id, 'verify']);
+    const userId = await attachOAuthAccount(provider, identity.subject, existingUser.id);
+    await establishSession(req, userId);
+    return res.json({ success: true, user: await getUserById(userId) });
+  }
+
+  const appleProfile = req.body?.profile && typeof req.body.profile === 'object' ? req.body.profile : {};
+  const appleName = appleProfile.name && typeof appleProfile.name === 'object' ? appleProfile.name : {};
+  const suggestedFirstName = provider === 'apple' && typeof appleName.firstName === 'string'
+    ? appleName.firstName.slice(0, 100)
+    : identity.firstName;
+  const suggestedLastName = provider === 'apple' && typeof appleName.lastName === 'string'
+    ? appleName.lastName.slice(0, 100)
+    : identity.lastName;
+  req.session.oauthPending = {
+    provider,
+    subject: identity.subject,
+    email: identity.email,
+    nome: suggestedFirstName,
+    cognome: suggestedLastName,
+    expiresAt: Date.now() + 15 * 60 * 1000,
+  };
+  await saveSession(req);
+  return res.json({
+    success: true,
+    needsProfile: true,
+    profile: { email: identity.email, nome: suggestedFirstName, cognome: suggestedLastName },
+  });
+});
+
+app.post('/api/oauth/profile', async (req, res) => {
+  const pending = req.session.oauthPending;
+  if (!pending || pending.expiresAt <= Date.now()) {
+    req.session.oauthPending = null;
+    return res.status(400).json({ error: 'La registrazione social è scaduta. Accedi di nuovo con il provider.' });
+  }
+
+  const { nome, cognome, born, parent, nick, year, accept } = req.body || {};
+  const normalizedYear = normalizeYear(year);
+  const normalizedNick = String(nick || '').trim().toLowerCase();
+  const age = calculateAge(born);
+  if (!nome || !cognome || age < 0 || age > 120 || !normalizedNick || !normalizedYear) {
+    return res.status(400).json({ error: 'Completa tutti i campi con valori validi.' });
+  }
+  if (!/^[a-z0-9_.]{3,20}$/i.test(normalizedNick)) {
+    return res.status(400).json({ error: 'Nickname non valido.' });
+  }
+  if (age < 14 && !isValidEmailAddress(String(parent || '').trim())) {
+    return res.status(400).json({ error: 'Per gli utenti sotto i 14 anni serve un’email del genitore valida.' });
+  }
+  if (!accept) return res.status(400).json({ error: 'Devi accettare le regole e la privacy.' });
+
+  const identity = { ...pending, email: String(pending.email).trim().toLowerCase() };
+  const profile = {
+    nome: String(nome).trim().slice(0, 100),
+    cognome: String(cognome).trim().slice(0, 100),
+    born,
+    parent: String(parent || '').trim().toLowerCase(),
+    nick: normalizedNick,
+    year: normalizedYear,
+  };
+  if (!profile.nome || !profile.cognome) {
+    return res.status(400).json({ error: 'Inserisci nome e cognome.' });
+  }
+
+  const userId = await createOAuthUser(identity, profile);
+  await establishSession(req, userId);
+  return res.json({ success: true, user: await getUserById(userId) });
 });
 
 app.post('/api/register', async (req, res) => {
@@ -477,6 +778,9 @@ app.post('/api/login', async (req, res) => {
   const credentials = await new Promise((resolve, reject) => {
     db.get('SELECT salt, password_hash FROM users WHERE id = ?', [user.id], (err, row) => (err ? reject(err) : resolve(row)));
   });
+  if (!credentials?.salt || !credentials.password_hash) {
+    return res.status(401).json({ error: 'Questo account usa l’accesso social. Continua con Google o Apple.' });
+  }
   const actualHash = hashPassword(credentials.salt, String(pw || ''));
   if (!crypto.timingSafeEqual(Buffer.from(actualHash), Buffer.from(credentials.password_hash))) {
     return res.status(401).json({ error: 'Credenziali non valide.' });
@@ -704,6 +1008,9 @@ app.post('/api/profile/password', requireAuth, async (req, res) => {
     db.get('SELECT password_hash FROM users WHERE id = ?', [user.id], (err, row) => (err ? reject(err) : resolve(row ? row.password_hash : '')));
   });
 
+  if (!storedSalt || !storedHash) {
+    return res.status(400).json({ error: 'Questo account non ha ancora una password. Usa “Password dimenticata?” per crearne una.' });
+  }
   if (hashPassword(storedSalt, String(currentPw || '')) !== storedHash) {
     return res.status(400).json({ error: 'Password attuale non corretta.' });
   }
