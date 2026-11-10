@@ -8,7 +8,7 @@ Community scolastica full-stack con account verificati tramite email, post per a
 - PostgreSQL gestito (Neon consigliato per Vercel)
 - Un dominio mittente verificato su Resend
 
-La registrazione accetta qualsiasi indirizzo email valido e accessibile, verificato tramite un codice che scade dopo 10 minuti. L'utente seleziona un anno scolastico da 1 a 5; non vengono raccolte classi.
+La registrazione accetta qualsiasi indirizzo email valido e accessibile, verificato tramite un codice che scade dopo 10 minuti. L'utente seleziona un liceo di Milano e un anno scolastico da 1 a 5; se la scuola non è presente nell'elenco iniziale, può inserirne il nome. I post e i contenuti per anno sono separati per scuola.
 
 La verifica email conferma il possesso della casella, ma non l'appartenenza alla scuola. L'anno scolastico selezionato resta autodichiarato e non viene confrontato con un registro ufficiale.
 

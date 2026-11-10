@@ -2,6 +2,7 @@ const state = {
   page: 'welcome',
   user: null,
   posts: [],
+  schools: [],
   error: '',
   form: {},
   composer: { open: false, text: '', image: '', scope: 'anno', options: ['', ''], poll: false },
@@ -32,6 +33,12 @@ function getSchoolYearOptions(selectedYear) {
   return Array.from({ length: 5 }, (_, index) => String(index + 1))
     .map((year) => '<option value="' + year + '" ' + (String(selectedYear) === year ? 'selected' : '') + '>' + year + '° anno</option>')
     .join('');
+}
+
+function getSchoolOptions(selectedSchool) {
+  return '<option value="">Seleziona il tuo liceo</option>' + state.schools
+    .map((school) => '<option value="' + esc(school.id) + '" ' + (selectedSchool === school.id ? 'selected' : '') + '>' + esc(school.name) + '</option>')
+    .join('') + '<option value="other" ' + (selectedSchool === 'other' ? 'selected' : '') + '>Il mio liceo non è nell’elenco</option>';
 }
 
 function renderBackButton(page, label) {
@@ -66,17 +73,17 @@ function allUsersVisiblePosts(posts) {
 function renderAuth() {
   const h = '<div class="auth"><h1 class="brand">corridoio<i>.</i></h1>';
   if (state.page === 'welcome') {
-    return h + '<h2 style="margin-top:50px">La community della tua scuola</h2><p class="lead">Domande, avvisi, sondaggi e discussioni. Registrati con qualsiasi indirizzo email accessibile: ti invieremo un codice per verificarlo.</p><button class="btn" onclick="state.page=\'signup\'; render();">Crea account</button><button class="btn sec" onclick="state.page=\'login\'; render();">Accedi</button><div class="hint" style="margin-top:18px">I post possono essere condivisi con il tuo anno o con tutta la scuola.</div></div>';
+    return h + '<h2 style="margin-top:50px">La community della tua scuola</h2><p class="lead">Domande, avvisi, sondaggi e discussioni. Registrati con qualsiasi indirizzo email accessibile: ti invieremo un codice per verificarlo.</p>' + (state.error ? '<div class="err">'+esc(state.error)+'</div>' : '') + '<button class="btn" onclick="beginSignup()">Crea account</button><button class="btn sec" onclick="state.page=\'login\'; render();">Accedi</button><div class="hint" style="margin-top:18px">I post possono essere condivisi con il tuo anno o con tutta la scuola.</div></div>';
   }
   if (state.page === 'login') {
-    return h + '<h2>Accedi</h2><p class="lead">Bentornato.</p><div class="fld"><label for="login-email">Email</label><input id="login-email" type="email" value="'+esc(state.form.email||'')+'" oninput="state.form.email=this.value" /></div><div class="fld"><label for="login-pw">Password</label><input id="login-pw" type="password" value="'+esc(state.form.pw||'')+'" oninput="state.form.pw=this.value" /></div>' + (state.error ? '<div class="err">'+esc(state.error)+'</div>' : '') + '<button class="btn" onclick="login()">Accedi</button><button class="lnk" onclick="state.page=\'forgot\'; state.error=\'\'; render();">Password dimenticata?</button><br><button class="lnk" onclick="state.page=\'signup\'; state.error=\'\'; render();">Non hai un account? Registrati</button></div>';
+    return h + '<h2>Accedi</h2><p class="lead">Bentornato.</p><div class="fld"><label for="login-email">Email</label><input id="login-email" type="email" value="'+esc(state.form.email||'')+'" oninput="state.form.email=this.value" /></div><div class="fld"><label for="login-pw">Password</label><input id="login-pw" type="password" value="'+esc(state.form.pw||'')+'" oninput="state.form.pw=this.value" /></div>' + (state.error ? '<div class="err">'+esc(state.error)+'</div>' : '') + '<button class="btn" onclick="login()">Accedi</button><button class="lnk" onclick="state.page=\'forgot\'; state.error=\'\'; render();">Password dimenticata?</button><br><button class="lnk" onclick="state.error=\'\'; beginSignup();">Non hai un account? Registrati</button></div>';
   }
   if (state.page === 'signup') {
     return h + '<h2>I tuoi dati</h2><p class="lead">Nome e cognome restano privati: gli altri vedranno solo il nickname.</p><div class="fld"><label>Email</label><input type="email" value="'+esc(state.form.email||'')+'" oninput="state.form.email=this.value" /></div><div class="fld"><label>Nome</label><input value="'+esc(state.form.nome||'')+'" oninput="state.form.nome=this.value" /></div><div class="fld"><label>Cognome</label><input value="'+esc(state.form.cognome||'')+'" oninput="state.form.cognome=this.value" /></div><div class="fld"><label>Data di nascita</label><input type="date" value="'+esc(state.form.born||'')+'" oninput="state.form.born=this.value" /></div>' + (state.form.born && new Date().getFullYear() - new Date(state.form.born).getFullYear() < 14 ? '<div class="fld"><label>Email del genitore</label><input type="email" value="'+esc(state.form.parent||'')+'" oninput="state.form.parent=this.value" /></div>' : '') + (state.error ? '<div class="err">'+esc(state.error)+'</div>' : '') + '<button class="btn" onclick="continueSignup()">Continua</button>' + renderBackButton('welcome', 'Indietro') + '</div>';
   }
   if (state.page === 'signup2') {
     const yearOptions = getSchoolYearOptions(state.form.year);
-    return h + '<h2>Profilo e sicurezza</h2><p class="lead">Scegli come ti vedranno gli altri.</p><div class="fld"><label>Nickname pubblico</label><input value="'+esc(state.form.nick||'')+'" oninput="state.form.nick=this.value" /></div><div class="fld"><label>Anno scolastico</label><select onchange="state.form.year=this.value">'+yearOptions+'</select></div><div class="fld"><label>Password</label><input type="password" value="'+esc(state.form.pw||'')+'" oninput="state.form.pw=this.value" /></div><div class="fld"><label>Ripeti password</label><input type="password" value="'+esc(state.form.pw2||'')+'" oninput="state.form.pw2=this.value" /></div><label class="chk"><input type="checkbox" checked="'+(state.form.accept ? 'checked' : 'unchecked')+'" onchange="state.form.accept=this.checked" /><span>Accetto le regole della community e l’informativa privacy.</span></label>' + (state.error ? '<div class="err">'+esc(state.error)+'</div>' : '') + '<button class="btn" onclick="register()">Crea account</button>' + renderBackButton('signup', 'Indietro') + '</div>';
+    return h + '<h2>Profilo e sicurezza</h2><p class="lead">Scegli il liceo e l’anno scolastico: vedrai i post della tua scuola e del tuo anno.</p><div class="fld"><label>Nickname pubblico</label><input value="'+esc(state.form.nick||'')+'" oninput="state.form.nick=this.value" /></div><div class="fld"><label>Liceo</label><select onchange="state.form.school=this.value; render();">'+getSchoolOptions(state.form.school)+'</select></div>' + (state.form.school === 'other' ? '<div class="fld"><label>Nome del liceo a Milano</label><input maxlength="100" value="'+esc(state.form.customSchoolName||'')+'" oninput="state.form.customSchoolName=this.value" /></div>' : '') + '<div class="fld"><label>Anno scolastico</label><select onchange="state.form.year=this.value">'+yearOptions+'</select></div><div class="fld"><label>Password</label><input type="password" value="'+esc(state.form.pw||'')+'" oninput="state.form.pw=this.value" /></div><div class="fld"><label>Ripeti password</label><input type="password" value="'+esc(state.form.pw2||'')+'" oninput="state.form.pw2=this.value" /></div><label class="chk"><input type="checkbox" checked="'+(state.form.accept ? 'checked' : 'unchecked')+'" onchange="state.form.accept=this.checked" /><span>Accetto le regole della community e l’informativa privacy.</span></label>' + (state.error ? '<div class="err">'+esc(state.error)+'</div>' : '') + '<button class="btn" onclick="register()">Crea account</button>' + renderBackButton('signup', 'Indietro') + '</div>';
   }
   if (state.page === 'verify') {
     return h + '<h2>Verifica la tua email</h2><p class="lead">Abbiamo inviato un codice a '+esc(state.form.email || '')+'. Controlla anche la cartella spam.</p><div class="fld"><label>Codice a 6 cifre</label><input inputmode="numeric" autocomplete="one-time-code" value="'+esc(state.form.code||'')+'" oninput="state.form.code=this.value" /></div>' + (state.error ? '<div class="err">'+esc(state.error)+'</div>' : '') + '<button class="btn" onclick="verifyCode()">Verifica</button><button class="lnk" onclick="resendCode()">Invia di nuovo</button>' + renderBackButton('login', 'Torna all’accesso') + '</div>';
@@ -110,11 +117,11 @@ function renderPost(post) {
 
 function renderHome() {
   const posts = allUsersVisiblePosts(state.posts || []);
-  return '<header><div class="hrow"><h1 class="brand" style="font-size:24px">corridoio<i>.</i></h1><span class="sch">Anno ' + esc(state.user.year) + ' · ' + esc(state.user.school) + '</span></div><div class="tabs"><button class="' + (state.filters.scope === 0 ? 'on' : '') + '" onclick="state.filters.scope=0; render();">Per te</button><button class="' + (state.filters.scope === 1 ? 'on' : '') + '" onclick="state.filters.scope=1; render();">Anno ' + esc(state.user.year) + '</button><button class="' + (state.filters.scope === 2 ? 'on' : '') + '" onclick="state.filters.scope=2; render();">Scuola</button></div></header><div class="bar"><span><button class="' + (state.filters.sort === 'rec' ? 'on' : '') + '" onclick="state.filters.sort=\'rec\'; render();">Recenti</button><button class="' + (state.filters.sort === 'pop' ? 'on' : '') + '" onclick="state.filters.sort=\'pop\'; render();">Popolari</button></span><button onclick="state.filters.q = state.filters.q ? \"\" : state.filters.q; render();">Cerca</button></div><input id="search-box" placeholder="Cerca parole o #hashtag" value="' + esc(state.filters.q) + '" oninput="state.filters.q=this.value; render();" />' + (posts.length ? posts.map(renderPost).join('') : '<div class="empty">Niente da vedere qui. Pubblica tu per primo.</div>') + '<nav><div><button class="on"><b>⌂</b>Home</button><button class="pub" onclick="state.composer.open=true; render();">Pubblica</button>' + (state.user.role === 'mod' ? '<button onclick="state.page=\'moderation\'; loadModeration(); render();"><b>⚑</b>Revisione</button>' : '') + '<button onclick="state.page=\'profile\'; render();"><b>☺</b>Profilo</button></div></nav>';
+  return '<header><div class="hrow"><h1 class="brand" style="font-size:24px">corridoio<i>.</i></h1><span class="sch">Anno ' + esc(state.user.year) + ' · ' + esc(state.user.schoolName) + '</span></div><div class="tabs"><button class="' + (state.filters.scope === 0 ? 'on' : '') + '" onclick="state.filters.scope=0; render();">Per te</button><button class="' + (state.filters.scope === 1 ? 'on' : '') + '" onclick="state.filters.scope=1; render();">Anno ' + esc(state.user.year) + '</button><button class="' + (state.filters.scope === 2 ? 'on' : '') + '" onclick="state.filters.scope=2; render();">Scuola</button></div></header><div class="bar"><span><button class="' + (state.filters.sort === 'rec' ? 'on' : '') + '" onclick="state.filters.sort=\'rec\'; render();">Recenti</button><button class="' + (state.filters.sort === 'pop' ? 'on' : '') + '" onclick="state.filters.sort=\'pop\'; render();">Popolari</button></span><button onclick="state.filters.q = state.filters.q ? \"\" : state.filters.q; render();">Cerca</button></div><input id="search-box" placeholder="Cerca parole o #hashtag" value="' + esc(state.filters.q) + '" oninput="state.filters.q=this.value; render();" />' + (posts.length ? posts.map(renderPost).join('') : '<div class="empty">Niente da vedere qui. Pubblica tu per primo.</div>') + '<nav><div><button class="on"><b>⌂</b>Home</button><button class="pub" onclick="state.composer.open=true; render();">Pubblica</button>' + (state.user.role === 'mod' ? '<button onclick="state.page=\'moderation\'; loadModeration(); render();"><b>⚑</b>Revisione</button>' : '') + '<button onclick="state.page=\'profile\'; render();"><b>☺</b>Profilo</button></div></nav>';
 }
 
 function renderProfile() {
-  return renderBackButton('home', 'Torna alla home') + '<h2>Profilo</h2><div class="card"><div class="hd"><div class="av" style="background:' + ['#b4570b','#0b7a82','#5b3fd6','#c62f3d','#12805c','#8a5a00'][Math.abs(state.user.nick.length) % 6] + '">' + esc((state.user.nick || '?')[0].toUpperCase()) + '</div><div><div class="nm">@' + esc(state.user.nick) + '</div><div class="meta">' + (state.user.role === 'student' ? 'Studente' : 'Moderatore') + ' · ' + esc(state.user.school) + ' · Anno ' + esc(state.user.year) + '</div></div></div></div><div class="card"><h3>Account</h3><div class="kv"><span>Email</span><span>' + esc(state.user.email) + '</span></div><div class="kv"><span>Nome (privato)</span><span>' + esc(state.user.nome) + ' ' + esc(state.user.cognome) + '</span></div><button class="btn sec sm" onclick="state.page=\'profile-edit\'; state.form.nick=state.user.nick; state.form.year=state.user.year; render();">Cambia nickname o anno</button><button class="btn sec sm" onclick="state.page=\'password-change\'; render();">Cambia password</button></div><div class="card"><h3>Aspetto</h3><div class="seg"><button onclick="toggleTheme()">Tema: ' + (state.user.theme || 'auto') + '</button></div></div><button class="btn sec" onclick="logout()">Esci</button>';
+  return renderBackButton('home', 'Torna alla home') + '<h2>Profilo</h2><div class="card"><div class="hd"><div class="av" style="background:' + ['#b4570b','#0b7a82','#5b3fd6','#c62f3d','#12805c','#8a5a00'][Math.abs(state.user.nick.length) % 6] + '">' + esc((state.user.nick || '?')[0].toUpperCase()) + '</div><div><div class="nm">@' + esc(state.user.nick) + '</div><div class="meta">' + (state.user.role === 'student' ? 'Studente' : 'Moderatore') + ' · ' + esc(state.user.schoolName) + ' · Anno ' + esc(state.user.year) + '</div></div></div></div><div class="card"><h3>Account</h3><div class="kv"><span>Email</span><span>' + esc(state.user.email) + '</span></div><div class="kv"><span>Nome (privato)</span><span>' + esc(state.user.nome) + ' ' + esc(state.user.cognome) + '</span></div><button class="btn sec sm" onclick="state.page=\'profile-edit\'; state.form.nick=state.user.nick; state.form.year=state.user.year; render();">Cambia nickname o anno</button><button class="btn sec sm" onclick="state.page=\'password-change\'; render();">Cambia password</button></div><div class="card"><h3>Aspetto</h3><div class="seg"><button onclick="toggleTheme()">Tema: ' + (state.user.theme || 'auto') + '</button></div></div><button class="btn sec" onclick="logout()">Esci</button>';
 }
 
 function renderModerator() {
@@ -236,6 +243,19 @@ async function continueSignup() {
   render();
 }
 
+async function beginSignup() {
+  state.error = '';
+  try {
+    const data = await api('/api/schools');
+    state.schools = data.schools || [];
+    state.page = 'signup';
+    render();
+  } catch (err) {
+    state.error = err.message;
+    render();
+  }
+}
+
 async function register() {
   state.error = '';
   if (state.form.pw !== state.form.pw2) {
@@ -243,7 +263,7 @@ async function register() {
     render();
     return;
   }
-  const payload = { email: state.form.email, nome: state.form.nome, cognome: state.form.cognome, born: state.form.born, parent: state.form.parent, nick: state.form.nick, pw: state.form.pw, year: state.form.year, accept: !!state.form.accept };
+  const payload = { email: state.form.email, nome: state.form.nome, cognome: state.form.cognome, born: state.form.born, parent: state.form.parent, nick: state.form.nick, pw: state.form.pw, year: state.form.year, school: state.form.school, customSchoolName: state.form.customSchoolName, accept: !!state.form.accept };
   try {
     await api('/api/register', { method: 'POST', body: JSON.stringify(payload) });
     state.form.email = payload.email;
@@ -424,6 +444,7 @@ window.render = render;
 window.login = login;
 window.register = register;
 window.continueSignup = continueSignup;
+window.beginSignup = beginSignup;
 window.verifyCode = verifyCode;
 window.resetPassword = resetPassword;
 window.forgotPassword = forgotPassword;

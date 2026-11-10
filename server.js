@@ -5,12 +5,13 @@ const connectPgSimple = require('connect-pg-simple');
 require('dotenv').config({ path: ['.env.local', '.env'] });
 const path = require('path');
 const crypto = require('crypto');
+const SCHOOLS = require('./public/schools.json');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const DATABASE_URL = process.env.DATABASE_URL;
 const SESSION_SECRET = process.env.SESSION_SECRET || (!process.env.VERCEL ? 'local-development-only-secret' : '');
-const SCHOOL_NAME = 'liceoleonardomi';
+const SCHOOLS_BY_ID = new Map(SCHOOLS.map((school) => [school.id, school]));
 const MODERATOR_EMAILS = (process.env.MODERATOR_EMAILS || '')
   .split(',')
   .map((email) => email.trim().toLowerCase())
@@ -150,8 +151,26 @@ function normalizeYear(value) {
   return match ? match[1] : '';
 }
 
+function resolveSchool(schoolId, customSchoolName) {
+  const school = SCHOOLS_BY_ID.get(String(schoolId || ''));
+  if (school) return school;
+  if (schoolId !== 'other') return null;
+
+  const name = String(customSchoolName || '').trim().replace(/\s+/g, ' ');
+  if (name.length < 3 || name.length > 100 || /[\u0000-\u001f\u007f]/.test(name)) return null;
+  const normalizeName = (value) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const existingSchool = SCHOOLS.find((item) => normalizeName(item.name) === normalizeName(name));
+  if (existingSchool) return existingSchool;
+  const slug = name.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 80);
+  if (!slug) return null;
+  return { id: `custom-${slug}`, name };
+}
+
 function serializeUser(row) {
   if (!row) return null;
+  const school = SCHOOLS_BY_ID.get(row.school);
   return {
     id: row.id,
     email: row.email,
@@ -159,6 +178,7 @@ function serializeUser(row) {
     nome: row.nome,
     cognome: row.cognome,
     school: row.school,
+    schoolName: row.school_name || school?.name || row.school,
     year: normalizeYear(row.cls),
     role: row.role,
     theme: row.theme,
@@ -298,6 +318,7 @@ async function initDatabase() {
     theme TEXT,
     created_at BIGINT
   )`);
+  await asyncDb('run', 'ALTER TABLE users ADD COLUMN IF NOT EXISTS school_name TEXT');
 
   await asyncDb('run', `CREATE TABLE IF NOT EXISTS posts (
     id TEXT PRIMARY KEY,
@@ -406,11 +427,16 @@ app.get('/api/session', async (req, res) => {
   res.json({ user });
 });
 
+app.get('/api/schools', (req, res) => {
+  res.json({ schools: SCHOOLS });
+});
+
 app.post('/api/register', async (req, res) => {
-  const { email, nome, cognome, born, parent, nick, pw, year, accept } = req.body || {};
+  const { email, nome, cognome, born, parent, nick, pw, year, school, customSchoolName, accept } = req.body || {};
   const normalizedEmail = String(email || '').trim().toLowerCase();
 
   const normalizedYear = normalizeYear(year);
+  const selectedSchool = resolveSchool(school, customSchoolName);
 
   if (!isValidEmailAddress(normalizedEmail)) {
     return res.status(400).json({ error: 'Inserisci un indirizzo email valido.' });
@@ -420,6 +446,9 @@ app.post('/api/register', async (req, res) => {
   }
   if (!normalizedYear) {
     return res.status(400).json({ error: 'Seleziona un anno scolastico valido, da 1 a 5.' });
+  }
+  if (!selectedSchool) {
+    return res.status(400).json({ error: 'Seleziona il tuo liceo. Se non compare, inseriscine il nome.' });
   }
   if (!accept) {
     return res.status(400).json({ error: 'Devi accettare le regole e la privacy.' });
@@ -438,8 +467,8 @@ app.post('/api/register', async (req, res) => {
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = hashPassword(salt, pw);
   const role = MODERATOR_EMAILS.includes(normalizedEmail) ? 'mod' : 'student';
-  await asyncDb('run', `INSERT INTO users (id, email, nick, nome, cognome, school, cls, role, salt, password_hash, born, parent_email, verified, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`, [userId, normalizedEmail, String(nick).trim().toLowerCase(), String(nome).trim(), String(cognome).trim(), SCHOOL_NAME, normalizedYear, role, salt, hash, String(born), parent ? String(parent).trim().toLowerCase() : null, Date.now()]);
+  await asyncDb('run', `INSERT INTO users (id, email, nick, nome, cognome, school, school_name, cls, role, salt, password_hash, born, parent_email, verified, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`, [userId, normalizedEmail, String(nick).trim().toLowerCase(), String(nome).trim(), String(cognome).trim(), selectedSchool.id, selectedSchool.name, normalizedYear, role, salt, hash, String(born), parent ? String(parent).trim().toLowerCase() : null, Date.now()]);
 
   try {
     await issueCode(userId, normalizedEmail, 'verify');
