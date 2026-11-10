@@ -11,9 +11,6 @@ const PORT = Number(process.env.PORT) || 3000;
 const DATABASE_URL = process.env.DATABASE_URL;
 const SESSION_SECRET = process.env.SESSION_SECRET || (!process.env.VERCEL ? 'local-development-only-secret' : '');
 const SCHOOL_NAME = 'liceoleonardomi';
-const ALLOWED_CLASSES = process.env.ALLOWED_CLASSES
-  ? process.env.ALLOWED_CLASSES.split(',').map((cls) => cls.trim().toUpperCase()).filter(Boolean)
-  : Array.from({ length: 5 }, (_, year) => 'ABCDEFGH'.split('').map((letter) => `${year + 1}${letter}`)).flat();
 const MODERATOR_EMAILS = (process.env.MODERATOR_EMAILS || '')
   .split(',')
   .map((email) => email.trim().toLowerCase())
@@ -148,9 +145,9 @@ async function checkEmailCode(userId, purpose, code) {
   return true;
 }
 
-function normalizeClassName(value) {
-  const next = String(value || '').trim().toUpperCase();
-  return next;
+function normalizeYear(value) {
+  const match = String(value ?? '').trim().match(/^([1-5])(?:[A-H])?$/i);
+  return match ? match[1] : '';
 }
 
 function serializeUser(row) {
@@ -162,7 +159,7 @@ function serializeUser(row) {
     nome: row.nome,
     cognome: row.cognome,
     school: row.school,
-    cls: row.cls,
+    year: normalizeYear(row.cls),
     role: row.role,
     theme: row.theme,
     born: row.born,
@@ -193,8 +190,9 @@ async function getUserByEmail(email) {
 function canViewPost(user, post) {
   if (!user || !post) return false;
   if (post.scope_type === 'scuola') return user.school === post.school;
-  if (post.scope_type === 'classe') return user.school === post.school && user.cls === post.scope_value;
-  if (post.scope_type === 'anno') return user.school === post.school && String(parseInt(user.cls, 10)) === String(post.scope_value);
+  if (post.scope_type === 'classe' || post.scope_type === 'anno') {
+    return user.school === post.school && normalizeYear(user.year) === normalizeYear(post.scope_value);
+  }
   return false;
 }
 
@@ -245,8 +243,8 @@ async function getPostDetails(postId, userId) {
   return {
     id: post.id,
     school: post.school,
-    scopeType: post.scope_type,
-    scopeValue: post.scope_value,
+    scopeType: post.scope_type === 'scuola' ? 'scuola' : 'anno',
+    scopeValue: post.scope_type === 'scuola' ? 'scuola' : normalizeYear(post.scope_value),
     text: post.text,
     image: post.image,
     createdAt: post.created_at,
@@ -409,10 +407,10 @@ app.get('/api/session', async (req, res) => {
 });
 
 app.post('/api/register', async (req, res) => {
-  const { email, nome, cognome, born, parent, nick, pw, cls, accept } = req.body || {};
+  const { email, nome, cognome, born, parent, nick, pw, year, accept } = req.body || {};
   const normalizedEmail = String(email || '').trim().toLowerCase();
 
-  const normalizedClass = normalizeClassName(cls);
+  const normalizedYear = normalizeYear(year);
 
   if (!isValidEmailAddress(normalizedEmail)) {
     return res.status(400).json({ error: 'Inserisci un indirizzo email valido.' });
@@ -420,8 +418,8 @@ app.post('/api/register', async (req, res) => {
   if (!nome || !cognome || !born || !nick || !pw) {
     return res.status(400).json({ error: 'Completa tutti i campi richiesti.' });
   }
-  if (!ALLOWED_CLASSES.length || !ALLOWED_CLASSES.includes(normalizedClass)) {
-    return res.status(400).json({ error: `Classe non valida. Usa una delle classi autorizzate: ${ALLOWED_CLASSES.join(', ')}` });
+  if (!normalizedYear) {
+    return res.status(400).json({ error: 'Seleziona un anno scolastico valido, da 1 a 5.' });
   }
   if (!accept) {
     return res.status(400).json({ error: 'Devi accettare le regole e la privacy.' });
@@ -441,7 +439,7 @@ app.post('/api/register', async (req, res) => {
   const hash = hashPassword(salt, pw);
   const role = MODERATOR_EMAILS.includes(normalizedEmail) ? 'mod' : 'student';
   await asyncDb('run', `INSERT INTO users (id, email, nick, nome, cognome, school, cls, role, salt, password_hash, born, parent_email, verified, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`, [userId, normalizedEmail, String(nick).trim().toLowerCase(), String(nome).trim(), String(cognome).trim(), SCHOOL_NAME, normalizedClass, role, salt, hash, String(born), parent ? String(parent).trim().toLowerCase() : null, Date.now()]);
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`, [userId, normalizedEmail, String(nick).trim().toLowerCase(), String(nome).trim(), String(cognome).trim(), SCHOOL_NAME, normalizedYear, role, salt, hash, String(born), parent ? String(parent).trim().toLowerCase() : null, Date.now()]);
 
   try {
     await issueCode(userId, normalizedEmail, 'verify');
@@ -582,10 +580,11 @@ app.post('/api/posts', requireAuth, async (req, res) => {
   const { text, image, scope, pollOptions } = req.body || {};
   const content = String(text || '').trim();
   if (!content && !image) return res.status(400).json({ error: 'Scrivi qualcosa o aggiungi una foto.' });
+  if (!user.year) return res.status(400).json({ error: 'Imposta un anno scolastico valido nel profilo prima di pubblicare.' });
 
   const itemId = randomId('p');
-  const scopeType = scope === 'scuola' ? 'scuola' : scope === 'anno' ? 'anno' : 'classe';
-  const scopeValue = scope === 'scuola' ? 'scuola' : scope === 'anno' ? String(parseInt(user.cls, 10)) : user.cls;
+  const scopeType = scope === 'scuola' ? 'scuola' : 'anno';
+  const scopeValue = scopeType === 'scuola' ? 'scuola' : user.year;
 
   await asyncDb('run', `INSERT INTO posts (id, user_id, school, scope_type, scope_value, text, image, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [itemId, user.id, user.school, scopeType, scopeValue, content, image || '', Date.now()]);
@@ -684,13 +683,13 @@ app.post('/api/posts/:id/vote', requireAuth, async (req, res) => {
 
 app.post('/api/profile', requireAuth, async (req, res) => {
   const user = await getUserById(req.session.userId);
-  const { nick, cls, theme } = req.body || {};
+  const { nick, year, theme } = req.body || {};
   const nextNick = String(nick || user.nick).trim().toLowerCase();
-  const nextClass = normalizeClassName(cls || user.cls);
+  const nextYear = normalizeYear(year || user.year);
   if (!/^[a-z0-9_.]{3,20}$/.test(nextNick)) return res.status(400).json({ error: 'Nickname non valido.' });
-  if (!ALLOWED_CLASSES.includes(nextClass)) return res.status(400).json({ error: 'Classe non valida.' });
+  if (!nextYear) return res.status(400).json({ error: 'Seleziona un anno scolastico valido, da 1 a 5.' });
 
-  await asyncDb('run', 'UPDATE users SET nick = ?, cls = ?, theme = ? WHERE id = ?', [nextNick, nextClass, theme || user.theme, user.id]);
+  await asyncDb('run', 'UPDATE users SET nick = ?, cls = ?, theme = ? WHERE id = ?', [nextNick, nextYear, theme || user.theme, user.id]);
   const updated = await getUserById(user.id);
   res.json({ success: true, user: updated });
 });

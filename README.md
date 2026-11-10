@@ -1,6 +1,6 @@
 # Corridoio
 
-Community scolastica full-stack con account verificati tramite email, classi, post, commenti, sondaggi e moderazione.
+Community scolastica full-stack con account verificati tramite email, post per anno scolastico o per tutta la scuola, commenti, sondaggi e moderazione.
 
 ## Requisiti
 
@@ -8,9 +8,9 @@ Community scolastica full-stack con account verificati tramite email, classi, po
 - PostgreSQL gestito (Neon consigliato per Vercel)
 - Un dominio mittente verificato su Resend
 
-La registrazione accetta qualsiasi indirizzo email valido e accessibile, verificato tramite un codice che scade dopo 10 minuti. Le classi ammesse vanno da `1A` a `5H`.
+La registrazione accetta qualsiasi indirizzo email valido e accessibile, verificato tramite un codice che scade dopo 10 minuti. L'utente seleziona un anno scolastico da 1 a 5; non vengono raccolte classi.
 
-La verifica email conferma il possesso della casella, ma non l'appartenenza alla scuola. La classe selezionata resta autodichiarata e non viene confrontata con un registro ufficiale. Per verificare l'appartenenza serve un elenco autorizzato fornito dalla scuola o un processo di conferma gestito da personale scolastico.
+La verifica email conferma il possesso della casella, ma non l'appartenenza alla scuola. L'anno scolastico selezionato resta autodichiarato e non viene confrontato con un registro ufficiale.
 
 ## Variabili d'ambiente
 
@@ -20,7 +20,6 @@ Copia `.env.example` in `.env` per lo sviluppo locale. Non committare mai `.env`
 - `SESSION_SECRET`: segreto lungo e casuale per firmare le sessioni
 - `RESEND_API_KEY`: chiave API di Resend
 - `EMAIL_FROM`: mittente autorizzato su Resend, per esempio `Corridoio <noreply@corridoio.runs-on.dev>`
-- `ALLOWED_CLASSES`: classi autorizzate, separate da virgola (default: `1A`–`5H`)
 - `MODERATOR_EMAILS`: indirizzi email abilitati alla moderazione, separati da virgola
 - `PORT`: porta locale (default: `3000`)
 
