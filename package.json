@@ -7,7 +7,7 @@
     "start": "node server.js",
     "dev": "node server.js",
     "build": "npm run check",
-    "check": "node --check server.js && node --check public/app.js && node --check api/index.js"
+    "check": "node --check server.js && node --check public/app.js && node --check public/analytics.js && node --check api/index.js"
   },
   "keywords": [],
   "author": "",

@@ -12,6 +12,8 @@ La registrazione accetta qualsiasi indirizzo email valido e accessibile, verific
 
 La verifica email conferma il possesso della casella, ma non l'appartenenza alla scuola. L'anno scolastico selezionato resta autodichiarato e non viene confrontato con un registro ufficiale.
 
+Google Analytics 4 viene caricato solo dopo il consenso esplicito dell'utente. Il banner permette di rifiutare e le preferenze privacy restano disponibili per modificare o revocare la scelta. L'integrazione usa direttamente lo stream GA4 per evitare invii duplicati tramite tag manager.
+
 ## Variabili d'ambiente
 
 Copia `.env.example` in `.env` per lo sviluppo locale. Non committare mai `.env` o credenziali.

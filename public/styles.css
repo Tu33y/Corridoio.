@@ -58,5 +58,14 @@ textarea{min-height:100px;resize:none;border:0;padding:4px 0;font-size:17px}text
 .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin:12px 0}
 .card h3{margin:0 0 8px;font-size:15px}.kv{display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-top:1px solid var(--line);font-size:14px}.kv span:first-child{color:var(--mut)}
 .toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:var(--tx);color:var(--bg);padding:10px 16px;border-radius:12px;font-weight:700;font-size:14px;z-index:30;max-width:90%}
+#consent-root{position:relative;z-index:40}
+.consent-panel{position:fixed;left:50%;bottom:calc(78px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);width:min(560px,calc(100% - 24px));padding:16px;background:var(--card);color:var(--tx);border:1px solid var(--line);border-radius:16px;box-shadow:0 12px 40px #0003}
+.consent-panel h2{font-size:17px;margin:0 0 6px}
+.consent-panel p{font-size:13px;color:var(--mut);margin:0}
+.consent-actions{display:flex;gap:8px;margin-top:12px}
+.consent-actions button,.privacy-settings{border:1px solid var(--line);border-radius:10px;padding:9px 12px;background:var(--soft);color:var(--tx);font:700 13px Manrope,system-ui,sans-serif;cursor:pointer}
+.consent-actions .consent-accept{background:var(--pri);border-color:var(--pri);color:var(--priT)}
+.privacy-settings{position:fixed;left:12px;bottom:calc(78px + env(safe-area-inset-bottom,0px));z-index:40;box-shadow:0 2px 12px #0002}
+@media(max-width:420px){.consent-actions{flex-wrap:wrap}.consent-actions button{flex:1}.consent-actions .consent-close{flex-basis:100%}}
 pre{white-space:pre-wrap;word-break:break-all;font-size:11px;background:var(--soft);padding:10px;border-radius:10px;max-height:200px;overflow:auto}
 .clk{cursor:pointer}.bigp{padding:20px}.bigp .txt{font-size:20px;line-height:1.55;margin-top:16px}.bigp .av{width:46px;height:46px;font-size:17px}.bigp .nm{font-size:16px}.bigp .img{max-height:none;border-radius:14px}.bigp .opt{padding:13px 14px;font-size:16px}.ch{font-weight:800;margin:20px 0 4px;padding-top:14px;border-top:1px solid var(--line)}
