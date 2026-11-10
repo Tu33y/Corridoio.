@@ -60,7 +60,3 @@ textarea{min-height:100px;resize:none;border:0;padding:4px 0;font-size:17px}text
 .toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:var(--tx);color:var(--bg);padding:10px 16px;border-radius:12px;font-weight:700;font-size:14px;z-index:30;max-width:90%}
 pre{white-space:pre-wrap;word-break:break-all;font-size:11px;background:var(--soft);padding:10px;border-radius:10px;max-height:200px;overflow:auto}
 .clk{cursor:pointer}.bigp{padding:20px}.bigp .txt{font-size:20px;line-height:1.55;margin-top:16px}.bigp .av{width:46px;height:46px;font-size:17px}.bigp .nm{font-size:16px}.bigp .img{max-height:none;border-radius:14px}.bigp .opt{padding:13px 14px;font-size:16px}.ch{font-weight:800;margin:20px 0 4px;padding-top:14px;border-top:1px solid var(--line)}
-.oauth-separator{display:flex;align-items:center;gap:12px;margin:20px 0 14px;color:var(--mut);font-size:12px;font-weight:700;text-transform:uppercase}.oauth-separator:before,.oauth-separator:after{content:"";height:1px;flex:1;background:var(--line)}
-.oauth-buttons{display:grid;gap:10px;justify-items:center;margin-bottom:12px}
-.oauth-btn{width:100%;min-height:44px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--tx);font:700 14px Manrope,system-ui,sans-serif;cursor:pointer}
-.oauth-btn.apple{background:#000;color:#fff;border-color:#000}
