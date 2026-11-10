@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://corridoio.runs-on.dev/sitemap.xml
